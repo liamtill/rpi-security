@@ -5,12 +5,13 @@ import argparse
 import logging
 import logging.handlers
 from ConfigParser import SafeConfigParser
-import RPi.GPIO as GPIO
 from datetime import datetime, timedelta
 import sys
 import time
 import signal
 import yaml
+import numpy as np
+from picamera.array import PiMotionAnalysis
 
 def parse_arguments():
     p = argparse.ArgumentParser(description='A simple security system to run on a Raspberry Pi.')
@@ -118,10 +119,6 @@ def take_photo(output_file):
     """
     Captures a photo and saves it disk.
     """
-    if args.debug:
-        GPIO.output(32, True)
-        time.sleep(0.25)
-        GPIO.output(32, False)
     try:
         camera.capture(output_file)
     except Exception as e:
@@ -390,8 +387,35 @@ def motion_detected(channel):
     else:
         logger.debug('Motion detected but current_state is: %s' % current_state)
 
+def detect_motion():
+    MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
+    MOTION_VECTORS = 10     # the number of vectors required to detect motion
+
+    class MyMotionDetector(PiMotionAnalysis):
+        def analyse(self, a):
+            # Calculate the magnitude of all vectors with pythagoras' theorem
+            a = np.sqrt(
+                np.square(a['x'].astype(np.float)) +
+                np.square(a['y'].astype(np.float))
+            ).clip(0, 255).astype(np.uint8)
+            # Count the number of vectors with a magnitude greater than our
+            # threshold
+            vector_count = (a > MOTION_MAGNITUDE).sum()
+            if vector_count > MOTION_VECTORS:
+                motion_detected()
+
+    with picamera.PiCamera() as camera:
+        camera.resolution = (1280, 720)
+        camera.framerate = 24
+        with MyMotionDetector(camera) as motion_detector:
+            camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
+            try:
+                while runMotionDetection:
+                    camera.wait_recording(1)
+            finally:
+                camera.stop_recording()
+
 def exit_cleanup():
-    GPIO.cleanup()
     if 'camera' in vars():
         camera.close()
 
@@ -437,7 +461,6 @@ def setup_logging(debug_mode=False, log_to_stdout=False):
     return logger
 
 if __name__ == "__main__":
-    GPIO.setwarnings(False)
     # Parse arguments and configuration, set up logging
     args = parse_arguments()
     config = parse_config_file(args.config_file)
@@ -465,8 +488,6 @@ if __name__ == "__main__":
     from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, RegexHandler
     from threading import Thread, current_thread
     from PIL import Image
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(32, GPIO.OUT, initial=False)
     try:
         camera = picamera.PiCamera()
         camera.resolution = config['camera_image_size']
@@ -501,14 +522,19 @@ if __name__ == "__main__":
     process_photos_thread = Thread(name='process_photos', target=process_photos, kwargs={'network_address': config['network_address'], 'mac_addresses': config['mac_addresses']})
     process_photos_thread.daemon = True
     process_photos_thread.start()
+    process_photos_thread = Thread(name='detect_motion', target=detect_motion, kwargs={'': config[''], '': config['']})
+    process_photos_thread.daemon = True
+    process_photos_thread.start()
     signal.signal(signal.SIGTERM, exit_clean)
     time.sleep(2)
     try:
-        GPIO.setup(config['pir_pin'], GPIO.IN)
-        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
+        for t in threading.enumerate():
+    	    if t is main_thread:
+    		    continue
+    	    t.join()
         logger.info("rpi-security running")
         telegram_send_message('rpi-security running')
-        while 1:
+        while True:
             time.sleep(100)
     except KeyboardInterrupt:
         exit_clean()
