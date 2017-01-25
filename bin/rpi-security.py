@@ -11,7 +11,6 @@ import time
 import signal
 import yaml
 import numpy as np
-from picamera.array import PiMotionAnalysis
 
 def parse_arguments():
     p = argparse.ArgumentParser(description='A simple security system to run on a Raspberry Pi.')
@@ -72,7 +71,7 @@ def parse_config_file(config_file):
         'camera_vflip': 'False',
         'camera_hflip': 'False',
         'camera_image_size': '1024x768',
-        'camera_mode': 'video',
+        'camera_mode': 'photo',
         'camera_capture_length': '3'
     }
     cfg = SafeConfigParser(defaults=default_config)
@@ -120,6 +119,8 @@ def take_photo(output_file):
     Captures a photo and saves it disk.
     """
     try:
+        camera_lock.acquire()
+        camera.stop_recording()
         camera.capture(output_file)
     except Exception as e:
         logger.error('Failed to take photo: %s' % e)
@@ -127,11 +128,15 @@ def take_photo(output_file):
     else:
         logger.info("Captured image: %s" % output_file)
         return True
+    finally:
+        camera_lock.release()
 
 def take_gif(output_file, length, temp_directory):
     temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
     jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
     try:
+        camera_lock.acquire()
+        camera.stop_recording()
         for jpeg in jpeg_files:
             camera.capture(jpeg, resize=(800,600))
         im=Image.open(jpeg_files[0])
@@ -149,11 +154,8 @@ def take_gif(output_file, length, temp_directory):
     else:
         logger.info("Captured gif: %s" % output_file)
         return True
-
-def archive_photo(photo_path):
-    #command = 'cp %(source) %(destination)' % {"source": "/var/tmp/blah", "destination": "s3/blah/blah"}
-    logger.debug('Archiving of photo complete: %s' % photo_path)
-    pass
+    finally:
+        camera_lock.release()
 
 def telegram_send_message(message):
     if 'telegram_chat_id' not in state:
@@ -173,9 +175,7 @@ def telegram_send_file(file_path):
         return False
     filename, file_extension = os.path.splitext(file_path)
     try:
-        if file_extension == '.mp4':
-            bot.sendVideo(chat_id=state['telegram_chat_id'], video=open(file_path, 'rb'), timeout=30)
-        elif file_extension == '.gif':
+        if file_extension == '.gif':
             bot.sendDocument(chat_id=state['telegram_chat_id'], document=open(file_path, 'rb'), timeout=30)
         elif file_extension == '.jpeg':
             bot.sendPhoto(chat_id=state['telegram_chat_id'], photo=open(file_path, 'rb'), timeout=10)
@@ -232,9 +232,8 @@ def process_photos(network_address, mac_addresses):
                     if alarm_state['current_state'] != 'armed':
                         break
                     logger.debug('Processing the photo: %s' % photo)
-                    alarm_state['alarm_triggered'] = True
+                    update_alarm_state('alarm_triggered', True)
                     if telegram_send_file(photo):
-                        archive_photo(photo)
                         captured_from_camera.remove(photo)
             else:
                 logger.debug('Stopping photo processing as state is now %s' % alarm_state['current_state'])
@@ -253,9 +252,9 @@ def capture_packets(network_interface, network_interface_mac, mac_addresses):
     def update_time(packet):
         for mac_address in mac_addresses:
             if mac_address in packet[0].addr2 or mac_address in packet[0].addr3:
-                alarm_state['last_packet_mac'] = mac_address
+                update_alarm_state('last_packet_mac', mac_address)
                 break
-        alarm_state['last_packet'] = time.time()
+        update_alarm_state('last_packet', time.time())
         logger.debug('Packet detected from %s' % str(alarm_state['last_packet_mac']))
     def calculate_filter(mac_addresses):
         mac_string = ' or '.join(mac_addresses)
@@ -267,13 +266,21 @@ def capture_packets(network_interface, network_interface_mac, mac_addresses):
         except Exception as e:
             exit_error('Scapy failed to sniff with error %s. Please check help or update scapy version' % e)
 
-def update_alarm_state(new_alarm_state):
-    if new_alarm_state != alarm_state['current_state']:
-        alarm_state['previous_state'] = alarm_state['current_state']
-        alarm_state['current_state'] = new_alarm_state
-        alarm_state['last_state_change'] = time.time()
-        logger.info("rpi-security is now %s" % alarm_state['current_state'])
-        telegram_send_message('rpi-security: *%s*' % alarm_state['current_state'])
+def update_alarm_state(key, value):
+    """
+    This function updates the global alarm_state dictionary using a threading lock
+    """
+    global alarm_state
+    with update_alarm_state_lock:
+        if key == 'current_state':
+            if value != alarm_state['current_state']:
+                alarm_state['previous_state'] = alarm_state['current_state']
+                alarm_state['current_state'] = value
+                alarm_state['last_state_change'] = time.time()
+                logger.info("rpi-security is now %s" % alarm_state['current_state'])
+                telegram_send_message('rpi-security: *%s*' % alarm_state['current_state'])
+        else:
+            alarm_state[key] = value
 
 def monitor_alarm_state(packet_timeout, network_address, mac_addresses):
     """
@@ -285,13 +292,13 @@ def monitor_alarm_state(packet_timeout, network_address, mac_addresses):
         now = time.time()
         if alarm_state['current_state'] != 'disabled':
             if now - alarm_state['last_packet'] > packet_timeout + 20:
-                update_alarm_state('armed')
+                update_alarm_state('current_state', 'armed')
             elif now - alarm_state['last_packet'] > packet_timeout:
                 arp_ping_macs(mac_addresses, network_address)
             else:
                 update_alarm_state('disarmed')
 
-def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
+def telegram_bot(token, state_file, camera_save_path, camera_capture_length, camera_mode):
     """
     This function runs the telegram bot that responds to commands like /enable, /disable or /status.
     """
@@ -315,14 +322,14 @@ def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
                 alarm_state_dict['alarm_triggered']
             )
     def save_chat_id(bot, update):
-        if 'telegram_chat_id' not in state:
-            state['telegram_chat_id'] = update.message.chat_id
-            write_state_file(state_file=args.state_file, state_data=state)
+        if 'telegram_chat_id' not in alarm_state:
+            update_alarm_state('telegram_chat_id'], update.message.chat_id)
+            write_state_file(state_file=state_file, state_data={'telegram_chat_id'=alarm_state['telegram_chat_id']} )
             logger.debug('Set Telegram chat_id %s' % update.message.chat_id)
     def debug(bot, update):
         logger.debug('Received Telegram bot message: %s' % update.message.text)
     def check_chat_id(update):
-        if update.message.chat_id != state['telegram_chat_id']:
+        if update.message.chat_id != alarm_state['telegram_chat_id']:
             logger.debug('Ignoring Telegam update with filtered chat id %s: %s' % (update.message.chat_id, update.message.text))
             return False
         else:
@@ -365,12 +372,8 @@ def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
     logger.info("thread running")
     updater.start_polling(timeout=10)
 
-def motion_detected(channel):
-    """
-    Capture a photo if motion is detected and the alarm state is armed
-    """
-    current_state = alarm_state['current_state']
-    if current_state == 'armed':
+def detect_motion(camera_mode, camera_save_path, camera_capture_length):
+    def motion_detected():
         logger.info('Motion detected')
         file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
         if config['camera_mode'] == 'gif':
@@ -384,14 +387,10 @@ def motion_detected(channel):
                 captured_from_camera.append(camera_output_file)
         else:
             logger.error("Unkown camera_mode %s" % config['camera_mode'])
-    else:
-        logger.debug('Motion detected but current_state is: %s' % current_state)
-
-def detect_motion():
-    MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
-    MOTION_VECTORS = 10     # the number of vectors required to detect motion
 
     class MyMotionDetector(PiMotionAnalysis):
+        MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
+        MOTION_VECTORS = 10     # the number of vectors required to detect motion
         def analyse(self, a):
             # Calculate the magnitude of all vectors with pythagoras' theorem
             a = np.sqrt(
@@ -403,17 +402,24 @@ def detect_motion():
             vector_count = (a > MOTION_MAGNITUDE).sum()
             if vector_count > MOTION_VECTORS:
                 motion_detected()
-
-    with picamera.PiCamera() as camera:
-        camera.resolution = (1280, 720)
-        camera.framerate = 24
-        with MyMotionDetector(camera) as motion_detector:
-            camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
+    while True:
+        if alarm_state['current_state'] == 'armed' not camera_lock.locked():
+            camera.resolution = (1280, 720)
+            camera.framerate = 24
+            motion_detector = MyMotionDetector(camera)
             try:
-                while runMotionDetection:
+                camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
+            except Exception as e:
+                logger.error('Failed to start motion detection with error: %s' % e)
+            else:
+                while alarm_state['current_state'] == 'armed':
                     camera.wait_recording(1)
+                else:
+                    camera.stop_recording()
             finally:
                 camera.stop_recording()
+        else:
+            time.sleep(0.5)
 
 def exit_cleanup():
     if 'camera' in vars():
@@ -437,7 +443,7 @@ def exit_error(message):
 def exception_handler(type, value, tb):
     logger.exception("Uncaught exception: {0}" % format(str(value)))
 
-def setup_logging(debug_mode=False, log_to_stdout=False):
+def setup_logging(debug_mode, log_to_stdout):
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
     syslog_handler = logging.handlers.SysLogHandler(address = '/dev/log')
@@ -465,9 +471,10 @@ if __name__ == "__main__":
     args = parse_arguments()
     config = parse_config_file(args.config_file)
     logger = setup_logging(debug_mode=config['debug_mode'], log_to_stdout=args.debug)
-    state = read_state_file(args.state_file)
     sys.excepthook = exception_handler
     captured_from_camera = []
+    camera_lock = threading.Lock()
+    update_alarm_state_lock = threading.Lock()
     # Some intial checks before proceeding
     if check_monitor_mode(config['network_interface']):
         config['network_interface_mac'] = get_interface_mac_addr(config['network_interface'])
@@ -479,6 +486,7 @@ if __name__ == "__main__":
         exit_error('%s must be run as root' % sys.argv[0])
     # Now begin importing slow modules and setting up camera, Telegram and threads
     import picamera
+    from picamera.array import PiMotionAnalysis
     logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
     from scapy.all import srp, Ether, ARP
     from scapy.all import conf as scapy_conf
@@ -509,22 +517,44 @@ if __name__ == "__main__":
         'last_packet_mac': None,
         'alarm_triggered': False
     }
+    alarm_state.update(read_state_file(args.state_file))
     # Start the threads
-    telegram_bot_thread = Thread(name='telegram_bot', target=telegram_bot, kwargs={'token': config['telegram_bot_token'], 'camera_save_path': config['camera_save_path'], 'camera_capture_length': config['camera_capture_length'], 'camera_mode': config['camera_mode'],})
+    telegram_bot_thread = Thread(name='telegram_bot', target=telegram_bot, kwargs={
+        'token': config['telegram_bot_token'],
+        'state_file': args.state_file
+        'camera_save_path': config['camera_save_path'],
+        'camera_capture_length': config['camera_capture_length'],
+        'camera_mode': config['camera_mode']
+    } )
     telegram_bot_thread.daemon = True
     telegram_bot_thread.start()
-    monitor_alarm_state_thread = Thread(name='monitor_alarm_state', target=monitor_alarm_state, kwargs={'packet_timeout': config['packet_timeout'], 'network_address': config['network_address'], 'mac_addresses': config['mac_addresses']})
+    monitor_alarm_state_thread = Thread(name='monitor_alarm_state', target=monitor_alarm_state, kwargs={
+        'packet_timeout': config['packet_timeout'],
+        'network_address': config['network_address'],
+        'mac_addresses': config['mac_addresses']
+    })
     monitor_alarm_state_thread.daemon = True
     monitor_alarm_state_thread.start()
-    capture_packets_thread = Thread(name='capture_packets', target=capture_packets, kwargs={'network_interface': config['network_interface'], 'network_interface_mac': config['network_interface_mac'], 'mac_addresses': config['mac_addresses']})
+    capture_packets_thread = Thread(name='capture_packets', target=capture_packets, kwargs={
+        'network_interface': config['network_interface'],
+        'network_interface_mac': config['network_interface_mac'],
+        'mac_addresses': config['mac_addresses']
+    })
     capture_packets_thread.daemon = True
     capture_packets_thread.start()
-    process_photos_thread = Thread(name='process_photos', target=process_photos, kwargs={'network_address': config['network_address'], 'mac_addresses': config['mac_addresses']})
+    process_photos_thread = Thread(name='process_photos', target=process_photos, kwargs={
+        'network_address': config['network_address'],
+        'mac_addresses': config['mac_addresses']
+    })
     process_photos_thread.daemon = True
     process_photos_thread.start()
-    process_photos_thread = Thread(name='detect_motion', target=detect_motion, kwargs={'': config[''], '': config['']})
-    process_photos_thread.daemon = True
-    process_photos_thread.start()
+    detect_motion_thread = Thread(name='detect_motion', target=detect_motion, kwargs={
+        'camera_mode': config['camera_mode'],
+        'camera_save_path': config['camera_save_path'],
+        'camera_capture_length': config['camera_capture_length']
+    })
+    detect_motion_thread.daemon = True
+    detect_motion_thread.start()
     signal.signal(signal.SIGTERM, exit_clean)
     time.sleep(2)
     try:
