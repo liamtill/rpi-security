@@ -6,7 +6,7 @@ import logging
 import logging.handlers
 from ConfigParser import SafeConfigParser
 from datetime import datetime, timedelta
-from threading import Thread, Lock
+import threading
 from Queue import Queue
 import sys
 import time
@@ -160,11 +160,11 @@ def take_gif(output_file, length, temp_directory):
         return True
 
 def telegram_send_message(message):
-    if 'telegram_chat_id' not in state:
+    if 'telegram_chat_id' not in alarm_state:
         logger.error('Telegram failed to send message because Telegram chat_id is not set. Send a message to the Telegram bot')
         return False
     try:
-        bot.sendMessage(chat_id=state['telegram_chat_id'], parse_mode='Markdown', text=message, timeout=10)
+        bot.sendMessage(chat_id=alarm_state['telegram_chat_id'], parse_mode='Markdown', text=message, timeout=10)
     except Exception as e:
         logger.error('Telegram message failed to send message "%s" with exception: %s' % (message, e))
     else:
@@ -172,15 +172,15 @@ def telegram_send_message(message):
         return True
 
 def telegram_send_file(file_path):
-    if 'telegram_chat_id' not in state:
+    if 'telegram_chat_id' not in alarm_state:
         logger.error('Telegram failed to send file %s because Telegram chat_id is not set. Send a message to the Telegram bot' % file_path)
         return False
     filename, file_extension = os.path.splitext(file_path)
     try:
         if file_extension == '.gif':
-            bot.sendDocument(chat_id=state['telegram_chat_id'], document=open(file_path, 'rb'), timeout=30)
+            bot.sendDocument(chat_id=alarm_state['telegram_chat_id'], document=open(file_path, 'rb'), timeout=30)
         elif file_extension == '.jpeg':
-            bot.sendPhoto(chat_id=state['telegram_chat_id'], photo=open(file_path, 'rb'), timeout=10)
+            bot.sendPhoto(chat_id=alarm_state['telegram_chat_id'], photo=open(file_path, 'rb'), timeout=10)
         else:
             logger.error('Uknown file not sent: %s' % file_path)
     except Exception as e:
@@ -247,15 +247,13 @@ def exit_clean(signal=None, frame=None):
 def exit_error(message):
     logger.critical(message)
     exit_cleanup()
-    try:
-        current_thread().getName()
-    except NameError:
+    if isinstance(threading.current_thread(), threading._MainThread):
         sys.exit(1)
     else:
         os._exit(1)
 
 def exception_handler(type, value, tb):
-    logger.exception("Uncaught exception: {0}" % format(str(value)))
+    logger.exception("Uncaught exception: %s" % format(str(value)))
 
 def setup_logging(debug_mode, log_to_stdout):
     logger = logging.getLogger(__name__)
@@ -356,6 +354,7 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
     """
     This function runs the telegram bot that responds to commands like /enable, /disable or /status.
     """
+    global alarm_state
     def prepare_status(alarm_state_dict):
         def readable_delta(then, now=time.time()):
             td = timedelta(seconds=now - then)
@@ -427,6 +426,9 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
     updater.start_polling(timeout=10)
 
 def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_queue):
+    def camera_stop_recording():
+        if camera.recording:
+            camera.stop_recording()
     def motion_detected():
         logger.info('Motion detected')
         file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -468,11 +470,11 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_q
                 while alarm_state['current_state'] == 'armed':
                     camera.wait_recording(1)
                 else:
-                    camera.stop_recording()
+                    camera_stop_recording()
             finally:
-                camera.stop_recording()
+                camera_stop_recording()
         else:
-            camera.stop_recording()
+            camera_stop_recording()
         time.sleep(0.5)
 
 ################################################################################
@@ -486,8 +488,8 @@ if __name__ == "__main__":
     logger = setup_logging(debug_mode=config['debug_mode'], log_to_stdout=args.debug)
     sys.excepthook = exception_handler
     camera_queue = Queue()
-    camera_lock = Lock()
-    update_alarm_state_lock = Lock()
+    camera_lock = threading.Lock()
+    update_alarm_state_lock = threading.Lock()
     # Some intial checks before proceeding
     if check_monitor_mode(config['network_interface']):
         config['network_interface_mac'] = get_interface_mac_addr(config['network_interface'])
@@ -531,7 +533,7 @@ if __name__ == "__main__":
     }
     alarm_state.update(read_state_file(args.state_file))
     # Start the threads
-    telegram_bot_thread = Thread(name='telegram_bot', target=telegram_bot, kwargs={
+    telegram_bot_thread = threading.Thread(name='telegram_bot', target=telegram_bot, kwargs={
         'token': config['telegram_bot_token'],
         'state_file': args.state_file,
         'camera_save_path': config['camera_save_path'],
@@ -540,28 +542,28 @@ if __name__ == "__main__":
     })
     telegram_bot_thread.daemon = True
     telegram_bot_thread.start()
-    monitor_alarm_state_thread = Thread(name='monitor_alarm_state', target=monitor_alarm_state, kwargs={
+    monitor_alarm_state_thread = threading.Thread(name='monitor_alarm_state', target=monitor_alarm_state, kwargs={
         'packet_timeout': config['packet_timeout'],
         'network_address': config['network_address'],
         'mac_addresses': config['mac_addresses']
     })
     monitor_alarm_state_thread.daemon = True
     monitor_alarm_state_thread.start()
-    capture_packets_thread = Thread(name='capture_packets', target=capture_packets, kwargs={
+    capture_packets_thread = threading.Thread(name='capture_packets', target=capture_packets, kwargs={
         'network_interface': config['network_interface'],
         'network_interface_mac': config['network_interface_mac'],
         'mac_addresses': config['mac_addresses']
     })
     capture_packets_thread.daemon = True
     capture_packets_thread.start()
-    process_photos_thread = Thread(name='process_photos', target=process_photos, kwargs={
+    process_photos_thread = threading.Thread(name='process_photos', target=process_photos, kwargs={
         'network_address': config['network_address'],
         'mac_addresses': config['mac_addresses'],
         'camera_queue': camera_queue
     })
     process_photos_thread.daemon = True
     process_photos_thread.start()
-    detect_motion_thread = Thread(name='detect_motion', target=detect_motion, kwargs={
+    detect_motion_thread = threading.Thread(name='detect_motion', target=detect_motion, kwargs={
         'camera_mode': config['camera_mode'],
         'camera_save_path': config['camera_save_path'],
         'camera_capture_length': config['camera_capture_length'],
