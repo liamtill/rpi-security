@@ -17,3 +17,7 @@ Auto adjust camera settings if too dark, white balance etc
 Use motion detection from camera
 
 Support multiple chat IDs or group chat so that multiple people can control it.
+
+Add note about pin names BCM/BOARD mode
+
+Test without monitor mode
