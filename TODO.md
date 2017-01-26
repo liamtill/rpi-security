@@ -10,7 +10,7 @@ Automatically delete old photos
 
 Implement an archive feature. Eg copy to S3 or FTP.
 
-Actually learn python and use methods instead of just a bunch of functions.
+Actually learn python and use classes instead of just a bunch of functions.
 
 Auto adjust camera settings if too dark, white balance etc
 
@@ -19,3 +19,5 @@ Use motion detection from camera
 Support multiple chat IDs or group chat so that multiple people can control it.
 
 Specify global vars in threads
+
+Delete photos and GIFs after sending them?

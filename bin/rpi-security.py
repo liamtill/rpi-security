@@ -6,6 +6,8 @@ import logging
 import logging.handlers
 from ConfigParser import SafeConfigParser
 from datetime import datetime, timedelta
+from threading import Thread, Lock
+from Queue import Queue
 import sys
 import time
 import signal
@@ -18,6 +20,10 @@ def parse_arguments():
     p.add_argument('-s', '--state_file', help='Path to state file.', default='/var/lib/rpi-security/state.yaml')
     p.add_argument('-d', '--debug', help='To enable debug output to stdout', action='store_true', default=False)
     return p.parse_args()
+
+################################################################################
+# General functions
+################################################################################
 
 def check_monitor_mode(network_interface):
     """
@@ -119,43 +125,39 @@ def take_photo(output_file):
     Captures a photo and saves it disk.
     """
     try:
-        camera_lock.acquire()
-        camera.stop_recording()
-        camera.capture(output_file)
+        with camera_lock.acquire():
+            camera.resolution = config['camera_image_size']
+            camera.capture(output_file)
     except Exception as e:
         logger.error('Failed to take photo: %s' % e)
         return False
     else:
         logger.info("Captured image: %s" % output_file)
         return True
-    finally:
-        camera_lock.release()
 
 def take_gif(output_file, length, temp_directory):
     temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
     jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
     try:
-        camera_lock.acquire()
-        camera.stop_recording()
-        for jpeg in jpeg_files:
-            camera.capture(jpeg, resize=(800,600))
-        im=Image.open(jpeg_files[0])
-        jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
-        ims = [Image.open(i) for i in jpeg_files_no_first_frame]
-        im.save(output_file, append_images=ims, save_all=True, loop=0, duration=200)
-        im.close()
-        for imfile in ims:
-            imfile.close()
-        for jpeg in jpeg_files:
-            os.remove(jpeg)
+        with camera_lock.acquire():
+            camera.resolution = config['camera_image_size']
+            for jpeg_file in jpeg_files:
+                camera.capture(jpeg_file, resize=(800,600))
+            im=Image.open(jpeg_files[0])
+            jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
+            ims = [Image.open(i) for i in jpeg_files_no_first_frame]
+            im.save(output_file, append_images=ims, save_all=True, loop=0, duration=200)
+            im.close()
+            for imfile in ims:
+                imfile.close()
+            for jpeg in jpeg_files:
+                os.remove(jpeg)
     except Exception as e:
         logger.error('Failed to create GIF: %s' % e)
         return False
     else:
         logger.info("Captured gif: %s" % output_file)
         return True
-    finally:
-        camera_lock.release()
 
 def telegram_send_message(message):
     if 'telegram_chat_id' not in state:
@@ -190,7 +192,7 @@ def telegram_send_file(file_path):
 
 def arp_ping_macs(mac_addresses, address, repeat=1):
     """
-    Performs an ARP scan of a destination MAC address to try and determine if they are present on the network.
+    Performs an ARP scan of a destination MAC addresses to try and determine if they are present on the network.
     """
     def _arp_ping(mac_address, ip_address):
         result = False
@@ -217,31 +219,98 @@ def arp_ping_macs(mac_addresses, address, repeat=1):
             time.sleep(2)
         repeat -= 1
 
-def process_photos(network_address, mac_addresses):
+def update_alarm_state(key, value):
     """
-    Monitors the captured_from_camera list for newly captured photos.
-    When a new photos are present it will run arp_ping_macs to remove false positives and then send the photos via Telegram.
-    After successfully sendind the photo it will also archive the photo and remove it from the list.
+    This function updates the global alarm_state dictionary using a threading lock
     """
+    global alarm_state
+    with update_alarm_state_lock:
+        if key == 'current_state':
+            if value != alarm_state['current_state']:
+                alarm_state['previous_state'] = alarm_state['current_state']
+                alarm_state['current_state'] = value
+                alarm_state['last_state_change'] = time.time()
+                logger.info("rpi-security is now %s" % alarm_state['current_state'])
+                telegram_send_message('rpi-security: *%s*' % alarm_state['current_state'])
+        else:
+            alarm_state[key] = value
+
+def exit_cleanup():
+    if 'camera' in vars():
+        camera.close()
+
+def exit_clean(signal=None, frame=None):
+    logger.info("rpi-security stopping...")
+    exit_cleanup()
+    sys.exit(0)
+
+def exit_error(message):
+    logger.critical(message)
+    exit_cleanup()
+    try:
+        current_thread().getName()
+    except NameError:
+        sys.exit(1)
+    else:
+        os._exit(1)
+
+def exception_handler(type, value, tb):
+    logger.exception("Uncaught exception: {0}" % format(str(value)))
+
+def setup_logging(debug_mode, log_to_stdout):
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    syslog_handler = logging.handlers.SysLogHandler(address = '/dev/log')
+    syslog_format = logging.Formatter("%(filename)s:%(threadName)s %(message)s", "%Y-%m-%d %H:%M:%S")
+    syslog_handler.setFormatter(syslog_format)
+    if log_to_stdout:
+        stdout_level = logging.DEBUG
+        stdout_format = logging.Formatter("%(asctime)s %(levelname)-7s %(filename)s:%(lineno)-3s %(threadName)-19s %(message)s", "%Y-%m-%d %H:%M:%S")
+    else:
+        stdout_level = logging.CRITICAL
+        stdout_format = logging.Formatter("ERROR: %(message)s")
+    if debug_mode:
+        syslog_handler.setLevel(logging.DEBUG)
+    else:
+        syslog_handler.setLevel(logging.INFO)
+    logger.addHandler(syslog_handler)
+    stdout_handler = logging.StreamHandler()
+    stdout_handler.setFormatter(stdout_format)
+    stdout_handler.setLevel(stdout_level)
+    logger.addHandler(stdout_handler)
+    return logger
+
+################################################################################
+# Thread fucntions
+################################################################################
+
+def process_photos(network_address, mac_addresses, camera_queue):
+    """
+    Monitors the camera_queue queue for newly captured photos.
+    When a new photos are present it will run arp_ping_macs to remove false
+    positives and then send the photos via Telegram.
+    """
+    def clear_camera_queue():
+        with camera_queue.mutex:
+            camera_queue.queue.clear()
+            # Delete the photo files?
+    global alarm_state
     logger.info("thread running")
     while True:
-        if len(captured_from_camera) > 0:
-            if alarm_state['current_state'] == 'armed':
-                arp_ping_macs(mac_addresses, network_address, repeat=3)
-                for photo in list(captured_from_camera):
-                    if alarm_state['current_state'] != 'armed':
-                        break
-                    logger.debug('Processing the photo: %s' % photo)
-                    update_alarm_state('alarm_triggered', True)
-                    if telegram_send_file(photo):
-                        captured_from_camera.remove(photo)
-            else:
-                logger.debug('Stopping photo processing as state is now %s' % alarm_state['current_state'])
-                for photo in list(captured_from_camera):
-                    logger.info('Removing photo as it is a false positive: %s' % photo)
-                    captured_from_camera.remove(photo)
-                    # Delete the photo file
-        time.sleep(5)
+        while not camera_queue.empty():
+            arp_ping_macs(mac_addresses, network_address, repeat=3)
+            time.sleep(1)
+            if alarm_state['current_state'] != 'armed':
+                clear_camera_queue()
+            while not camera_queue.empty():
+                photo = camera_queue.get()
+                logger.debug('Processing the photo: %s' % photo)
+                update_alarm_state('alarm_triggered', True)
+                telegram_send_file(photo)
+                camera_queue.task_done()
+                if alarm_state['current_state'] != 'armed':
+                    clear_camera_queue()
+                    logger.debug('Stopping photo processing as state is now %s' % alarm_state['current_state'])
 
 def capture_packets(network_interface, network_interface_mac, mac_addresses):
     """
@@ -259,44 +328,29 @@ def capture_packets(network_interface, network_interface_mac, mac_addresses):
     def calculate_filter(mac_addresses):
         mac_string = ' or '.join(mac_addresses)
         return '((wlan addr2 (%(mac_string)s) or wlan addr3 (%(mac_string)s)) and type mgt subtype probe-req) or (wlan addr1 %(network_interface_mac)s and wlan addr3 (%(mac_string)s))' % { 'mac_string' : mac_string, 'network_interface_mac' : network_interface_mac }
+    logger.info("thread running")
     while True:
-        logger.info("thread running")
         try:
             sniff(iface=network_interface, store=0, prn=update_time, filter=calculate_filter(mac_addresses))
         except Exception as e:
             exit_error('Scapy failed to sniff with error %s. Please check help or update scapy version' % e)
 
-def update_alarm_state(key, value):
-    """
-    This function updates the global alarm_state dictionary using a threading lock
-    """
-    global alarm_state
-    with update_alarm_state_lock:
-        if key == 'current_state':
-            if value != alarm_state['current_state']:
-                alarm_state['previous_state'] = alarm_state['current_state']
-                alarm_state['current_state'] = value
-                alarm_state['last_state_change'] = time.time()
-                logger.info("rpi-security is now %s" % alarm_state['current_state'])
-                telegram_send_message('rpi-security: *%s*' % alarm_state['current_state'])
-        else:
-            alarm_state[key] = value
-
 def monitor_alarm_state(packet_timeout, network_address, mac_addresses):
     """
     This function monitors and updates the alarm state based on data from Telegram and the alarm_state dictionary.
     """
+    global alarm_state
     logger.info("thread running")
     while True:
-        time.sleep(3)
-        now = time.time()
-        if alarm_state['current_state'] != 'disabled':
+        while alarm_state['current_state'] != 'disabled':
+            now = time.time()
             if now - alarm_state['last_packet'] > packet_timeout + 20:
                 update_alarm_state('current_state', 'armed')
             elif now - alarm_state['last_packet'] > packet_timeout:
                 arp_ping_macs(mac_addresses, network_address)
             else:
-                update_alarm_state('disarmed')
+                update_alarm_state('current_state', 'disarmed')
+            time.sleep(0.5)
 
 def telegram_bot(token, state_file, camera_save_path, camera_capture_length, camera_mode):
     """
@@ -323,8 +377,8 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
             )
     def save_chat_id(bot, update):
         if 'telegram_chat_id' not in alarm_state:
-            update_alarm_state('telegram_chat_id'], update.message.chat_id)
-            write_state_file(state_file=state_file, state_data={'telegram_chat_id'=alarm_state['telegram_chat_id']} )
+            update_alarm_state('telegram_chat_id', update.message.chat_id)
+            write_state_file(state_file=state_file, state_data={'telegram_chat_id': alarm_state['telegram_chat_id']} )
             logger.debug('Set Telegram chat_id %s' % update.message.chat_id)
     def debug(bot, update):
         logger.debug('Received Telegram bot message: %s' % update.message.text)
@@ -372,22 +426,21 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
     logger.info("thread running")
     updater.start_polling(timeout=10)
 
-def detect_motion(camera_mode, camera_save_path, camera_capture_length):
+def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_queue):
     def motion_detected():
         logger.info('Motion detected')
         file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
         if config['camera_mode'] == 'gif':
             camera_output_file = "%s.gif" % file_prefix
             take_gif(camera_output_file, config['camera_capture_length'], config['camera_save_path'])
-            captured_from_camera.append(camera_output_file)
+            camera_queue.put(camera_output_file)
         elif config['camera_mode'] == 'photo':
             for i in range(0, config['camera_capture_length'], 1):
                 camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
                 take_photo(camera_output_file)
-                captured_from_camera.append(camera_output_file)
+                camera_queue.put(camera_output_file)
         else:
             logger.error("Unkown camera_mode %s" % config['camera_mode'])
-
     class MyMotionDetector(PiMotionAnalysis):
         MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
         MOTION_VECTORS = 10     # the number of vectors required to detect motion
@@ -403,7 +456,7 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length):
             if vector_count > MOTION_VECTORS:
                 motion_detected()
     while True:
-        if alarm_state['current_state'] == 'armed' not camera_lock.locked():
+        while alarm_state['current_state'] == 'armed' and not camera_lock.locked():
             camera.resolution = (1280, 720)
             camera.framerate = 24
             motion_detector = MyMotionDetector(camera)
@@ -419,52 +472,12 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length):
             finally:
                 camera.stop_recording()
         else:
-            time.sleep(0.5)
+            camera.stop_recording()
+        time.sleep(0.5)
 
-def exit_cleanup():
-    if 'camera' in vars():
-        camera.close()
-
-def exit_clean(signal=None, frame=None):
-    logger.info("rpi-security stopping...")
-    exit_cleanup()
-    sys.exit(0)
-
-def exit_error(message):
-    logger.critical(message)
-    exit_cleanup()
-    try:
-        current_thread().getName()
-    except NameError:
-        sys.exit(1)
-    else:
-        os._exit(1)
-
-def exception_handler(type, value, tb):
-    logger.exception("Uncaught exception: {0}" % format(str(value)))
-
-def setup_logging(debug_mode, log_to_stdout):
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
-    syslog_handler = logging.handlers.SysLogHandler(address = '/dev/log')
-    syslog_format = logging.Formatter("%(filename)s:%(threadName)s %(message)s", "%Y-%m-%d %H:%M:%S")
-    syslog_handler.setFormatter(syslog_format)
-    if log_to_stdout:
-        stdout_level = logging.DEBUG
-        stdout_format = logging.Formatter("%(asctime)s %(levelname)-7s %(filename)s:%(lineno)-3s %(threadName)-19s %(message)s", "%Y-%m-%d %H:%M:%S")
-    else:
-        stdout_level = logging.CRITICAL
-        stdout_format = logging.Formatter("ERROR: %(message)s")
-    if debug_mode:
-        syslog_handler.setLevel(logging.DEBUG)
-    else:
-        syslog_handler.setLevel(logging.INFO)
-    logger.addHandler(syslog_handler)
-    stdout_handler = logging.StreamHandler()
-    stdout_handler.setFormatter(stdout_format)
-    stdout_handler.setLevel(stdout_level)
-    logger.addHandler(stdout_handler)
-    return logger
+################################################################################
+# Main
+################################################################################
 
 if __name__ == "__main__":
     # Parse arguments and configuration, set up logging
@@ -472,9 +485,9 @@ if __name__ == "__main__":
     config = parse_config_file(args.config_file)
     logger = setup_logging(debug_mode=config['debug_mode'], log_to_stdout=args.debug)
     sys.excepthook = exception_handler
-    captured_from_camera = []
-    camera_lock = threading.Lock()
-    update_alarm_state_lock = threading.Lock()
+    camera_queue = Queue()
+    camera_lock = Lock()
+    update_alarm_state_lock = Lock()
     # Some intial checks before proceeding
     if check_monitor_mode(config['network_interface']):
         config['network_interface_mac'] = get_interface_mac_addr(config['network_interface'])
@@ -494,12 +507,11 @@ if __name__ == "__main__":
     scapy_conf.sniff_promisc=0
     import telegram
     from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, RegexHandler
-    from threading import Thread, current_thread
     from PIL import Image
     try:
         camera = picamera.PiCamera()
-        camera.resolution = config['camera_image_size']
         camera.vflip = config['camera_vflip']
+        camera.hflip = config['camera_hflip']
         camera.led = False
     except Exception as e:
         exit_error('Camera module failed to intialise with error %s' % e)
@@ -521,11 +533,11 @@ if __name__ == "__main__":
     # Start the threads
     telegram_bot_thread = Thread(name='telegram_bot', target=telegram_bot, kwargs={
         'token': config['telegram_bot_token'],
-        'state_file': args.state_file
+        'state_file': args.state_file,
         'camera_save_path': config['camera_save_path'],
         'camera_capture_length': config['camera_capture_length'],
         'camera_mode': config['camera_mode']
-    } )
+    })
     telegram_bot_thread.daemon = True
     telegram_bot_thread.start()
     monitor_alarm_state_thread = Thread(name='monitor_alarm_state', target=monitor_alarm_state, kwargs={
@@ -544,14 +556,16 @@ if __name__ == "__main__":
     capture_packets_thread.start()
     process_photos_thread = Thread(name='process_photos', target=process_photos, kwargs={
         'network_address': config['network_address'],
-        'mac_addresses': config['mac_addresses']
+        'mac_addresses': config['mac_addresses'],
+        'camera_queue': camera_queue
     })
     process_photos_thread.daemon = True
     process_photos_thread.start()
     detect_motion_thread = Thread(name='detect_motion', target=detect_motion, kwargs={
         'camera_mode': config['camera_mode'],
         'camera_save_path': config['camera_save_path'],
-        'camera_capture_length': config['camera_capture_length']
+        'camera_capture_length': config['camera_capture_length'],
+        'camera_queue': camera_queue
     })
     detect_motion_thread.daemon = True
     detect_motion_thread.start()
@@ -559,7 +573,7 @@ if __name__ == "__main__":
     time.sleep(2)
     try:
         for t in threading.enumerate():
-    	    if t is main_thread:
+    	    if isinstance(threading.current_thread(), threading._MainThread):
     		    continue
     	    t.join()
         logger.info("rpi-security running")
