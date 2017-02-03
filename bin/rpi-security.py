@@ -168,7 +168,7 @@ def telegram_send_message(message):
     except Exception as e:
         logger.error('Telegram message failed to send message "%s" with exception: %s' % (message, e))
     else:
-        logger.info('Telegram message Sent: "%s"' % message)
+        logger.debug('Telegram message Sent: "%s"' % message)
         return True
 
 def telegram_send_file(file_path):
@@ -187,7 +187,7 @@ def telegram_send_file(file_path):
         logger.error('Telegram failed to send file %s with exception: %s' % (file_path, e))
         return False
     else:
-        logger.info('Telegram file sent: %s' % file_path)
+        logger.debug('Telegram file sent: %s' % file_path)
         return True
 
 def arp_ping_macs(mac_addresses, address, repeat=1):
@@ -293,7 +293,7 @@ def process_photos(network_address, mac_addresses, camera_queue):
         while not camera_queue.empty():
             photo = camera_queue.get()
             os.remove(photo)
-            logger.debug('Photo %s removed' % photo)
+            logger.debug('Photo %s deleted' % photo)
             camera_queue.task_done()
     global alarm_state
     logger.info("thread running")
