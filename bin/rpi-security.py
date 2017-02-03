@@ -140,9 +140,9 @@ def take_gif(output_file, length, temp_directory):
     jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
     with camera_lock:
         try:
-            camera.resolution = config['camera_image_size']
+            camera.resolution = (800,600)
             for jpeg_file in jpeg_files:
-                camera.capture(jpeg_file, resize=(800,600))
+                camera.capture(jpeg_file)
             im=Image.open(jpeg_files[0])
             jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
             ims = [Image.open(i) for i in jpeg_files_no_first_frame]
@@ -329,8 +329,7 @@ def capture_packets(network_interface, network_interface_mac, mac_addresses):
         logger.debug('Packet detected from %s' % str(alarm_state['last_packet_mac']))
     def calculate_filter(mac_addresses):
         mac_string = ' or '.join(mac_addresses)
-        #return '((wlan addr2 (%(mac_string)s) or wlan addr3 (%(mac_string)s)) and type mgt subtype probe-req) or (wlan addr1 %(network_interface_mac)s and wlan addr3 (%(mac_string)s))' % { 'mac_string' : mac_string, 'network_interface_mac' : network_interface_mac }
-        return 'port 12345'
+        return '((wlan addr2 (%(mac_string)s) or wlan addr3 (%(mac_string)s)) and type mgt subtype probe-req) or (wlan addr1 %(network_interface_mac)s and wlan addr3 (%(mac_string)s))' % { 'mac_string' : mac_string, 'network_interface_mac' : network_interface_mac }
     logger.info("thread running")
     while True:
         try:
@@ -500,7 +499,7 @@ if __name__ == "__main__":
     camera_lock = threading.Lock()
     update_alarm_state_lock = threading.Lock()
     # Some intial checks before proceeding
-    if check_monitor_mode(config['network_interface']) or True:
+    if check_monitor_mode(config['network_interface']):
         config['network_interface_mac'] = get_interface_mac_addr(config['network_interface'])
         # Hard coded interface name here. Need a better solution...
         config['network_address'] = get_network_address('wlan0')
