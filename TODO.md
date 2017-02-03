@@ -25,3 +25,7 @@ Test without monitor mode
 Specify global vars in threads
 
 Delete photos and GIFs after sending them?
+
+test memory usage
+
+Test different motion detection settings
