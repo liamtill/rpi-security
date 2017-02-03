@@ -12,9 +12,9 @@ import signal
 import yaml
 import threading
 import random
-#import picamera
-#from picamera.array import PiMotionAnalysis
-
+import numpy as np
+import picamera
+from picamera.array import PiMotionAnalysis
 
 def motion_detection_thread():
     print 'motion_detection_thread running'
@@ -27,29 +27,29 @@ def motion_detection_thread():
     def camera_stop_recording():
         if camera.recording:
             camera.stop_recording()
-    # class MyMotionDetector(PiMotionAnalysis):
-    #     def analyse(self, a):
-    #         a = np.sqrt(
-    #             np.square(a['x'].astype(np.float)) +
-    #             np.square(a['y'].astype(np.float))
-    #         ).clip(0, 255).astype(np.uint8)
-    #         vector_count = (a > MOTION_MAGNITUDE).sum()
-    #         if vector_count > MOTION_VECTORS:
-    #             motion_detected()
-    camera_recording = False
+    class MyMotionDetector(PiMotionAnalysis):
+        def analyse(self, a):
+            a = np.sqrt(
+                np.square(a['x'].astype(np.float)) +
+                np.square(a['y'].astype(np.float))
+            ).clip(0, 255).astype(np.uint8)
+            vector_count = (a > MOTION_MAGNITUDE).sum()
+            if vector_count > MOTION_VECTORS:
+                motion_detected()
+    motion_detector = MyMotionDetector(camera)
     while True:
         time.sleep(0.05)
         while not camera_lock.locked():
-            if camera_recording:
+            if camera.recording:
                 print 'checking recording'
-                time.sleep(1)
+                camera.wait_recording(1)
             else:
                 print 'starting recording'
-                camera_recording = True
+                camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
         else:
-            if camera_recording:
+            if camera.recording:
                 print 'stopping monitoring'
-                camera_recording = False
+                camera.stop_recording()
 
 def take_photos():
     print 'take_photos running'
@@ -60,15 +60,15 @@ def take_photos():
         with camera_lock:
             time.sleep(1)
             print 'taking photo...'
-            #take_photo('temp.jpeg')
+            camera.capture('temp.jpeg')
             time.sleep(3)
             print 'done'
 
 if __name__ == "__main__":
     camera_lock = threading.Lock()
-    # camera = picamera.PiCamera()
-    # camera.resolution = (1280, 720)
-    # camera.framerate = 24
+    camera = picamera.PiCamera()
+    camera.resolution = (1280, 720)
+    camera.framerate = 24
     motion_detection_thread = threading.Thread(name='motion_detection_thread', target=motion_detection_thread)
     motion_detection_thread.daemon = True
     motion_detection_thread.start()
