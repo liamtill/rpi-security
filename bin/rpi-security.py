@@ -124,22 +124,34 @@ def take_photo(output_file):
     """
     Captures a photo and saves it disk.
     """
-    try:
-        with camera_lock.acquire():
+    with camera_lock:
+        logger.info('Taking photo')
+        try:
+            logger.info('Taking 111')
+            time.sleep(2)
+            logger.info('Taking 222')
             camera.resolution = config['camera_image_size']
+            logger.info('Taking 444')
+            print camera.recording
+            print camera
+            print dir(camera)
+            if camera.recording:
+                logger.info("Stopping motion detection 11111")
+                camera.stop_recording()
             camera.capture(output_file)
-    except Exception as e:
-        logger.error('Failed to take photo: %s' % e)
-        return False
-    else:
-        logger.info("Captured image: %s" % output_file)
-        return True
+            logger.info('Taken photo')
+        except Exception as e:
+            logger.error('Failed to take photo: %s' % e)
+            return False
+        else:
+            logger.info("Captured image: %s" % output_file)
+            return True
 
 def take_gif(output_file, length, temp_directory):
     temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
     jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
-    try:
-        with camera_lock.acquire():
+    with camera_lock:
+        try:
             camera.resolution = config['camera_image_size']
             for jpeg_file in jpeg_files:
                 camera.capture(jpeg_file, resize=(800,600))
@@ -152,12 +164,12 @@ def take_gif(output_file, length, temp_directory):
                 imfile.close()
             for jpeg in jpeg_files:
                 os.remove(jpeg)
-    except Exception as e:
-        logger.error('Failed to create GIF: %s' % e)
-        return False
-    else:
-        logger.info("Captured gif: %s" % output_file)
-        return True
+        except Exception as e:
+            logger.error('Failed to create GIF: %s' % e)
+            return False
+        else:
+            logger.info("Captured gif: %s" % output_file)
+            return True
 
 def telegram_send_message(message):
     if 'telegram_chat_id' not in alarm_state:
@@ -194,6 +206,7 @@ def arp_ping_macs(mac_addresses, address, repeat=1):
     """
     Performs an ARP scan of a destination MAC addresses to try and determine if they are present on the network.
     """
+    logger.debug('ARP ping 1')
     def _arp_ping(mac_address, ip_address):
         result = False
         answered,unanswered = srp(Ether(dst=mac_address)/ARP(pdst=ip_address), timeout=1, verbose=False)
@@ -206,9 +219,11 @@ def arp_ping_macs(mac_addresses, address, repeat=1):
                     result = ', '.join(result)
         return result
     while repeat > 0:
+        logger.debug('ARP ping 2')
         if time.time() - alarm_state['last_packet'] < 30:
             break
         for mac_address in mac_addresses:
+            logger.debug('ARP ping 3')
             result = _arp_ping(mac_address, address)
             if result:
                 logger.debug('MAC %s responded to ARP ping with address %s' % (mac_address, result))
@@ -236,8 +251,9 @@ def update_alarm_state(key, value):
             alarm_state[key] = value
 
 def exit_cleanup():
-    if 'camera' in vars():
-        camera.close()
+    if camera.recording:
+        camera.stop_recording()
+    camera.close()
 
 def exit_clean(signal=None, frame=None):
     logger.info("rpi-security stopping...")
@@ -296,6 +312,7 @@ def process_photos(network_address, mac_addresses, camera_queue):
     logger.info("thread running")
     while True:
         while not camera_queue.empty():
+            logger.debug('Performing ARP pings before processing photos')
             arp_ping_macs(mac_addresses, network_address, repeat=3)
             time.sleep(1)
             if alarm_state['current_state'] != 'armed':
@@ -325,7 +342,8 @@ def capture_packets(network_interface, network_interface_mac, mac_addresses):
         logger.debug('Packet detected from %s' % str(alarm_state['last_packet_mac']))
     def calculate_filter(mac_addresses):
         mac_string = ' or '.join(mac_addresses)
-        return '((wlan addr2 (%(mac_string)s) or wlan addr3 (%(mac_string)s)) and type mgt subtype probe-req) or (wlan addr1 %(network_interface_mac)s and wlan addr3 (%(mac_string)s))' % { 'mac_string' : mac_string, 'network_interface_mac' : network_interface_mac }
+        #return '((wlan addr2 (%(mac_string)s) or wlan addr3 (%(mac_string)s)) and type mgt subtype probe-req) or (wlan addr1 %(network_interface_mac)s and wlan addr3 (%(mac_string)s))' % { 'mac_string' : mac_string, 'network_interface_mac' : network_interface_mac }
+        return 'port 12345'
     logger.info("thread running")
     while True:
         try:
@@ -345,6 +363,7 @@ def monitor_alarm_state(packet_timeout, network_address, mac_addresses):
             if now - alarm_state['last_packet'] > packet_timeout + 20:
                 update_alarm_state('current_state', 'armed')
             elif now - alarm_state['last_packet'] > packet_timeout:
+                logger.debug('Performing ARP ping before arming after packet timeout')
                 arp_ping_macs(mac_addresses, network_address)
             else:
                 update_alarm_state('current_state', 'disarmed')
@@ -355,6 +374,7 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
     This function runs the telegram bot that responds to commands like /enable, /disable or /status.
     """
     global alarm_state
+    global camera
     def prepare_status(alarm_state_dict):
         def readable_delta(then, now=time.time()):
             td = timedelta(seconds=now - then)
@@ -395,10 +415,10 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
             bot.sendMessage(update.message.chat_id, parse_mode='Markdown', text=prepare_status(alarm_state), timeout=10)
     def disable(bot, update):
         if check_chat_id(update):
-            update_alarm_state('disabled')
+            update_alarm_state('current_state', 'disabled')
     def enable(bot, update):
         if check_chat_id(update):
-            update_alarm_state('disarmed')
+            update_alarm_state('current_state', 'disarmed')
     def photo(bot, update):
         if check_chat_id(update):
             file_path = camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + '.jpeg'
@@ -426,26 +446,35 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
     updater.start_polling(timeout=10)
 
 def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_queue):
+    MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
+    MOTION_VECTORS = 10     # the number of vectors required to detect motion
+    global alarm_state
+    global config
+    global camera
     def camera_stop_recording():
         if camera.recording:
+            logger.info("Stopping motion detection")
             camera.stop_recording()
     def motion_detected():
-        logger.info('Motion detected')
-        file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        if config['camera_mode'] == 'gif':
-            camera_output_file = "%s.gif" % file_prefix
-            take_gif(camera_output_file, config['camera_capture_length'], config['camera_save_path'])
-            camera_queue.put(camera_output_file)
-        elif config['camera_mode'] == 'photo':
-            for i in range(0, config['camera_capture_length'], 1):
-                camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
-                take_photo(camera_output_file)
-                camera_queue.put(camera_output_file)
+        if time.time() - alarm_state_dict['last_state_change'] < 10:
+            logger.info("Skipping intial noise")
         else:
-            logger.error("Unkown camera_mode %s" % config['camera_mode'])
+            logger.info('Motion detected')
+            file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
+            if config['camera_mode'] == 'gif':
+                camera_output_file = "%s.gif" % file_prefix
+                if take_gif(camera_output_file, config['camera_capture_length'], config['camera_save_path']):
+                    #camera_queue.put(camera_output_file)
+                    pass
+            elif config['camera_mode'] == 'photo':
+                for i in range(0, config['camera_capture_length'], 1):
+                    camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
+                    if take_photo(camera_output_file):
+                        pass
+                        #camera_queue.put(camera_output_file)
+            else:
+                logger.error("Unkown camera_mode %s" % config['camera_mode'])
     class MyMotionDetector(PiMotionAnalysis):
-        MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
-        MOTION_VECTORS = 10     # the number of vectors required to detect motion
         def analyse(self, a):
             # Calculate the magnitude of all vectors with pythagoras' theorem
             a = np.sqrt(
@@ -457,25 +486,27 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_q
             vector_count = (a > MOTION_MAGNITUDE).sum()
             if vector_count > MOTION_VECTORS:
                 motion_detected()
+    logger.info("thread running")
     while True:
+        logger.debug('Loop 11')
+        print camera_lock.locked()
+        print camera.recording
         while alarm_state['current_state'] == 'armed' and not camera_lock.locked():
-            camera.resolution = (1280, 720)
-            camera.framerate = 24
-            motion_detector = MyMotionDetector(camera)
-            try:
-                camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
-            except Exception as e:
-                logger.error('Failed to start motion detection with error: %s' % e)
+            if not camera.recording:
+                camera.resolution = (1280, 720)
+                camera.framerate = 24
+                motion_detector = MyMotionDetector(camera)
+                try:
+                    logger.info("Starting motion detection")
+                    camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
+                except Exception as e:
+                    logger.error('Failed to start motion detection with error: %s' % e)
             else:
-                while alarm_state['current_state'] == 'armed':
-                    camera.wait_recording(1)
-                else:
-                    camera_stop_recording()
-            finally:
-                camera_stop_recording()
+                camera.wait_recording(1)
         else:
+            logger.debug('Stopping 11')
             camera_stop_recording()
-        time.sleep(0.5)
+        time.sleep(1)
 
 ################################################################################
 # Main
@@ -491,7 +522,7 @@ if __name__ == "__main__":
     camera_lock = threading.Lock()
     update_alarm_state_lock = threading.Lock()
     # Some intial checks before proceeding
-    if check_monitor_mode(config['network_interface']):
+    if check_monitor_mode(config['network_interface']) or True:
         config['network_interface_mac'] = get_interface_mac_addr(config['network_interface'])
         # Hard coded interface name here. Need a better solution...
         config['network_address'] = get_network_address('wlan0')
