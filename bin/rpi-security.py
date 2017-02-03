@@ -125,21 +125,9 @@ def take_photo(output_file):
     Captures a photo and saves it disk.
     """
     with camera_lock:
-        logger.info('Taking photo')
         try:
-            logger.info('Taking 111')
-            time.sleep(2)
-            logger.info('Taking 222')
             camera.resolution = config['camera_image_size']
-            logger.info('Taking 444')
-            print camera.recording
-            print camera
-            print dir(camera)
-            if camera.recording:
-                logger.info("Stopping motion detection 11111")
-                camera.stop_recording()
             camera.capture(output_file)
-            logger.info('Taken photo')
         except Exception as e:
             logger.error('Failed to take photo: %s' % e)
             return False
@@ -206,7 +194,6 @@ def arp_ping_macs(mac_addresses, address, repeat=1):
     """
     Performs an ARP scan of a destination MAC addresses to try and determine if they are present on the network.
     """
-    logger.debug('ARP ping 1')
     def _arp_ping(mac_address, ip_address):
         result = False
         answered,unanswered = srp(Ether(dst=mac_address)/ARP(pdst=ip_address), timeout=1, verbose=False)
@@ -219,11 +206,9 @@ def arp_ping_macs(mac_addresses, address, repeat=1):
                     result = ', '.join(result)
         return result
     while repeat > 0:
-        logger.debug('ARP ping 2')
         if time.time() - alarm_state['last_packet'] < 30:
             break
         for mac_address in mac_addresses:
-            logger.debug('ARP ping 3')
             result = _arp_ping(mac_address, address)
             if result:
                 logger.debug('MAC %s responded to ARP ping with address %s' % (mac_address, result))
@@ -305,9 +290,11 @@ def process_photos(network_address, mac_addresses, camera_queue):
     positives and then send the photos via Telegram.
     """
     def clear_camera_queue():
-        with camera_queue.mutex:
-            camera_queue.queue.clear()
-            # Delete the photo files?
+        while not camera_queue.empty():
+            photo = camera_queue.get()
+            os.remove(photo)
+            logger.debug('Photo %s removed' % photo)
+            camera_queue.task_done()
     global alarm_state
     logger.info("thread running")
     while True:
@@ -446,32 +433,29 @@ def telegram_bot(token, state_file, camera_save_path, camera_capture_length, cam
     updater.start_polling(timeout=10)
 
 def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_queue):
-    MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
-    MOTION_VECTORS = 10     # the number of vectors required to detect motion
+    """
+    This function runs the motino detection process using the camera module.
+    """
     global alarm_state
     global config
     global camera
-    def camera_stop_recording():
-        if camera.recording:
-            logger.info("Stopping motion detection")
-            camera.stop_recording()
+    MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
+    MOTION_VECTORS = 10     # the number of vectors required to detect motion
     def motion_detected():
         if time.time() - alarm_state_dict['last_state_change'] < 10:
-            logger.info("Skipping intial noise")
+            logger.debug("Skipping intial detection of motion")
         else:
             logger.info('Motion detected')
             file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
             if config['camera_mode'] == 'gif':
                 camera_output_file = "%s.gif" % file_prefix
                 if take_gif(camera_output_file, config['camera_capture_length'], config['camera_save_path']):
-                    #camera_queue.put(camera_output_file)
-                    pass
+                    camera_queue.put(camera_output_file)
             elif config['camera_mode'] == 'photo':
                 for i in range(0, config['camera_capture_length'], 1):
                     camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
                     if take_photo(camera_output_file):
-                        pass
-                        #camera_queue.put(camera_output_file)
+                        camera_queue.put(camera_output_file)
             else:
                 logger.error("Unkown camera_mode %s" % config['camera_mode'])
     class MyMotionDetector(PiMotionAnalysis):
@@ -486,27 +470,21 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_q
             vector_count = (a > MOTION_MAGNITUDE).sum()
             if vector_count > MOTION_VECTORS:
                 motion_detected()
+    motion_detector = MyMotionDetector(camera)
     logger.info("thread running")
     while True:
-        logger.debug('Loop 11')
-        print camera_lock.locked()
-        print camera.recording
+        time.sleep(0.05)
         while alarm_state['current_state'] == 'armed' and not camera_lock.locked():
             if not camera.recording:
                 camera.resolution = (1280, 720)
                 camera.framerate = 24
-                motion_detector = MyMotionDetector(camera)
-                try:
-                    logger.info("Starting motion detection")
-                    camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
-                except Exception as e:
-                    logger.error('Failed to start motion detection with error: %s' % e)
+                camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
             else:
                 camera.wait_recording(1)
         else:
-            logger.debug('Stopping 11')
-            camera_stop_recording()
-        time.sleep(1)
+            if camera.recording:
+                logger.info("Stopping motion detection")
+                camera.stop_recording()
 
 ################################################################################
 # Main
@@ -603,7 +581,6 @@ if __name__ == "__main__":
     detect_motion_thread.daemon = True
     detect_motion_thread.start()
     signal.signal(signal.SIGTERM, exit_clean)
-    time.sleep(2)
     try:
         for t in threading.enumerate():
     	    if isinstance(threading.current_thread(), threading._MainThread):
