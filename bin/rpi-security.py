@@ -441,7 +441,7 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_q
     MOTION_MAGNITUDE = 60   # the magnitude of vectors required for motion
     MOTION_VECTORS = 10     # the number of vectors required to detect motion
     def motion_detected():
-        if time.time() - alarm_state_dict['last_state_change'] < 10:
+        if time.time() - alarm_state['last_state_change'] < 10:
             logger.debug("Skipping intial detection of motion")
         else:
             logger.info('Motion detected')
@@ -477,12 +477,13 @@ def detect_motion(camera_mode, camera_save_path, camera_capture_length, camera_q
             if not camera.recording:
                 camera.resolution = (1280, 720)
                 camera.framerate = 24
+                logger.debug("Starting motion detection")
                 camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
             else:
                 camera.wait_recording(1)
         else:
             if camera.recording:
-                logger.info("Stopping motion detection")
+                logger.debug("Stopping motion detection")
                 camera.stop_recording()
 
 ################################################################################
@@ -585,7 +586,6 @@ if __name__ == "__main__":
     	    if isinstance(threading.current_thread(), threading._MainThread):
     		    continue
     	    t.join()
-        logger.info("rpi-security running")
         telegram_send_message('rpi-security running')
         while True:
             time.sleep(100)
