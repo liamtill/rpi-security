@@ -9,6 +9,7 @@ setup(
     license='GPLv2',
     description='A security system written in python to run on a Raspberry Pi with motion detection and mobile notifications',
     long_description=open('README.md').read(),
+    packages = ['rpisecurity'],
     scripts = [ 'bin/rpi-security.py' ],
     data_files=[
         ('/lib/systemd/system', ['etc/rpi-security.service']),
@@ -18,6 +19,7 @@ setup(
     install_requires=[
         'python-telegram-bot',
         'picamera',
+        'configparser',
         'requests',
         'requests[security]',
         'netaddr',
@@ -26,8 +28,8 @@ setup(
         'Pillow>=3.4.0'
     ],
     classifiers=[
-    'Environment :: Console',
+        'Environment :: Console',
         'Operating System :: POSIX',
-        'Programming Language :: Python :: 2.7'
+        'Programming Language :: Python :: 3'
     ],
 )
