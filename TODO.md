@@ -1,4 +1,4 @@
-# rpi-sec to do list
+# rpi-security to do list
 
 Add more debug for bot stuff
 

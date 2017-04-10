@@ -86,9 +86,6 @@ class RpiConfig(object):
         return result
 
     def _check_system(self):
-        if sys.platform is not 'raspbian':
-            raise Exception('Only supported on Raspbian version xx')
-
         if not os.geteuid() == 0:
             exit_error('%s must be run as root' % sys.argv[0])
 
@@ -120,16 +117,19 @@ class RpiConfig(object):
         try:
             with open('/sys/class/net/%s/address' % self.network_interface, 'r') as f:
                 self.mac_address = f.read().strip()
-        except:
+        except FileNotFoundError:
+            raise Exception('Interface {0} does not exist'.format(self.network_interface))
+        except Exception:
             raise Exception('Unable to get MAC address for interface {0}'.format(self.network_interface))
 
     def _set_network_address(self):
         """
-        Calculates the network address of an interface.
+        Finds the corresponding normal interface for a monitor interface and
+        then calculates the subnet address of this interface
         """
         for interface in os.listdir('/sys/class/net'):
             if interface in ['lo', self.network_interface]:
-                pass
+                continue
             try:
                 with open('/sys/class/net/%s/address' % interface, 'r') as f:
                     interface_mac_address = f.read().strip()
@@ -140,7 +140,7 @@ class RpiConfig(object):
                     interface_details = ifaddresses(interface)
                     my_network = IPNetwork('%s/%s'.format(interface_details[2][0]['addr'], interface_details[2][0]['netmask']))
                     network_address = my_network.cidr
-                    logger.debug('Calculated network: %s' % network_address)
+                    logger.debug('Calculated network {0} from interface {0}'.format(network_address, interface))
                     self.network_address = str(network_address)
-        if not self.network_address:
+        if not hasattr(self, 'network_address'):
             raise Exception('Unable to get network address')

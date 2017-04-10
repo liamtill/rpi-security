@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import os
 import argparse
@@ -28,8 +28,7 @@ from threading import Thread, current_thread
 from PIL import Image
 
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(32, GPIO.OUT, initial=False)
-
+GPIO.setwarnings(False)
 
 def parse_arguments():
     p = argparse.ArgumentParser(description='A simple security system to run on a Raspberry Pi.')
@@ -93,20 +92,19 @@ def setup_logging(debug_mode=False, log_to_stdout=False):
 if __name__ == "__main__":
     args = parse_arguments()
 
-    alarm_state = RpiAlarmState()
+    logger = setup_logging(debug_mode=True, log_to_stdout=args.debug)
+
+    alarm_state = rpisecurity.RpiAlarmState()
 
     try:
-        config = RpiConfig(args.config_file, args.state_file)
+        config = rpisecurity.RpiConfig(args.config_file, args.state_file)
     except Exception as e:
         exit_error('Configuration error: {0}'.format(repr(e)))
 
-    GPIO.setwarnings(False)
 
-    logger = setup_logging(debug_mode=config.debug_mode, log_to_stdout=args.debug)
 
     sys.excepthook = exception_handler
     captured_from_camera = []
-
 
     try:
         camera = picamera.PiCamera()
@@ -124,42 +122,42 @@ if __name__ == "__main__":
     # Start the threads
     telegram_bot_thread = Thread(name='telegram_bot', target=telegram_bot,
         kwargs={
-            'token': config['telegram_bot_token'],
-            'camera_save_path': config['camera_save_path'],
-            'camera_capture_length': config['camera_capture_length'],
-            'camera_mode': config['camera_mode']
+            'token': config.telegram_bot_token,
+            'camera_save_path': config.camera_save_path,
+            'camera_capture_length': config.camera_capture_length,
+            'camera_mode': config.camera_mode
             }
         )
     telegram_bot_thread.daemon = True
     telegram_bot_thread.start()
     monitor_alarm_state_thread = Thread(name='monitor_alarm_state', target=monitor_alarm_state,
         kwargs={
-            'packet_timeout': config['packet_timeout'],
-            'network_address': config['network_address'],
-            'mac_addresses': config['mac_addresses']
+            'packet_timeout': config.packet_timeout,
+            'network_address': config.network_address,
+            'mac_addresses': config.mac_addresses
         })
     monitor_alarm_state_thread.daemon = True
     monitor_alarm_state_thread.start()
     capture_packets_thread = Thread(name='capture_packets', target=capture_packets,
         kwargs={
-            'network_interface': config['network_interface'],
-            'network_interface_mac': config['network_interface_mac'],
-            'mac_addresses': config['mac_addresses']
+            'network_interface': config.network_interface,
+            'network_interface_mac': config.network_interface_mac,
+            'mac_addresses': config.mac_addresses
         })
     capture_packets_thread.daemon = True
     capture_packets_thread.start()
     process_photos_thread = Thread(name='process_photos', target=process_photos,
         kwargs={
-            'network_address': config['network_address'],
-            'mac_addresses': config['mac_addresses']
+            'network_address': config.network_address,
+            'mac_addresses': config.mac_addresses
         })
     process_photos_thread.daemon = True
     process_photos_thread.start()
     signal.signal(signal.SIGTERM, exit_clean)
     time.sleep(2)
     try:
-        GPIO.setup(config['pir_pin'], GPIO.IN)
-        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
+        GPIO.setup(config.pir_pin, GPIO.IN)
+        GPIO.add_event_detect(config.pir_pin, GPIO.RISING, callback=motion_detected)
         logger.info("rpi-security running")
         telegram_send_message('rpi-security running')
         while 1:

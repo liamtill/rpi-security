@@ -8,18 +8,18 @@ def motion_detected(channel):
     current_state = alarm_state.current
     if current_state == 'armed':
         logger.info('Motion detected')
-        file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        if config['camera_mode'] == 'gif':
+        file_prefix = config.camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        if config.camera_mode == 'gif':
             camera_output_file = "%s.gif" % file_prefix
-            take_gif(camera_output_file, config['camera_capture_length'], config['camera_save_path'])
+            take_gif(camera_output_file, config.camera_capture_length, config.camera_save_path)
             captured_from_camera.append(camera_output_file)
-        elif config['camera_mode'] == 'photo':
-            for i in range(0, config['camera_capture_length'], 1):
+        elif config.camera_mode == 'photo':
+            for i in range(0, config.camera_capture_length, 1):
                 camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
                 take_photo(camera_output_file)
                 captured_from_camera.append(camera_output_file)
         else:
-            logger.error("Unkown camera_mode %s" % config['camera_mode'])
+            logger.error("Unkown camera_mode %s" % config.camera_mode)
     else:
         logger.debug('Motion detected but current_state is: %s' % current_state)
 

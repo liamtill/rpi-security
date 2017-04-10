@@ -72,7 +72,7 @@ You can send the Telegram bot commands that trigger certain actions.
 
 ### Python
 
-I wrote the whole application in python. Large parts of the functionality are provided by the following pip modules:
+The application is written in python 3. Large parts of the functionality are provided by the following pip modules:
   - [picamera](https://github.com/waveform80/picamera)
   - [Scapy](http://www.secdev.org/projects/scapy/)
   - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
@@ -93,26 +93,15 @@ First install required packages:
 
 ```
 sudo apt-get update
-sudo apt-get install tcpdump iw python-dev python-pip libjpeg8-dev zlib1g-dev
-```
-
-Update pip:
-
-```
-pip install --upgrade pip
-```
-
-Install current master of scapy as the current release is missing a required bug fix:
-
-```
-sudo pip install https://github.com/secdev/scapy/zipball/master
-sudo pip --no-cache-dir install 'Pillow>=3.4.0'
+sudo apt-get install tcpdump iw python3-dev python3-pip libjpeg8-dev zlib1g-dev
+sudo pip3 install --upgrade pip
+sudo pip3 --no-cache-dir install 'Pillow>=3.4.0'
 ```
 
 Install rpi-security, reload systemd configuration and enable the service:
 
 ```
-sudo pip install https://github.com/FutureSharks/rpi-security/zipball/master
+sudo pip3 install https://github.com/FutureSharks/rpi-security/zipball/master
 sudo systemctl daemon-reload
 sudo systemctl enable rpi-security.service
 ```
