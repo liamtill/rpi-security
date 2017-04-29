@@ -5,7 +5,7 @@ def motion_detected(channel):
     """
     Capture a photo if motion is detected and the alarm state is armed
     """
-    current_state = alarm_state.current
+    current_state = rpisecurity.state.current
     if current_state == 'armed':
         logger.info('Motion detected')
         file_prefix = config.camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -22,36 +22,6 @@ def motion_detected(channel):
             logger.error("Unkown camera_mode %s" % config.camera_mode)
     else:
         logger.debug('Motion detected but current_state is: %s' % current_state)
-
-
-def arp_ping_macs(mac_addresses, address, repeat=1):
-    """
-    Performs an ARP scan of a destination MAC address to try and determine if they are present on the network.
-    """
-    def _arp_ping(mac_address, ip_address):
-        result = False
-        answered,unanswered = srp(Ether(dst=mac_address)/ARP(pdst=ip_address), timeout=1, verbose=False)
-        if len(answered) > 0:
-            for reply in answered:
-                if reply[1].hwsrc == mac_address:
-                    if type(result) is not list:
-                        result = []
-                    result.append(str(reply[1].psrc))
-                    result = ', '.join(result)
-        return result
-    while repeat > 0:
-        if time.time() - alarm_state.last_packet < 30:
-            break
-        for mac_address in mac_addresses:
-            result = _arp_ping(mac_address, address)
-            if result:
-                logger.debug('MAC %s responded to ARP ping with address %s' % (mac_address, result))
-                break
-            else:
-                logger.debug('MAC %s did not respond to ARP ping' % mac_address)
-        if repeat > 1:
-            time.sleep(2)
-        repeat -= 1
 
 
 def take_photo(output_file):

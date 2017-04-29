@@ -10,8 +10,6 @@ Automatically delete old photos
 
 Implement an archive feature. Eg copy to S3 or FTP.
 
-Actually learn python and use methods instead of just a bunch of functions.
-
 Auto adjust camera settings if too dark, white balance etc
 
 Use motion detection from camera
@@ -19,3 +17,11 @@ Use motion detection from camera
 Support multiple chat IDs or group chat so that multiple people can control it.
 
 Remove static reference to wlan0
+
+Use python 3
+
+Use queue for camera photos
+
+rename save_state to save_data
+
+Check for needless imports

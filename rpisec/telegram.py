@@ -13,6 +13,7 @@ def telegram_send_message(message):
         logger.info('Telegram message Sent: "%s"' % message)
         return True
 
+
 def telegram_send_file(file_path):
     if 'telegram_chat_id' not in state:
         logger.error('Telegram failed to send file %s because Telegram chat_id is not set. Send a message to the Telegram bot' % file_path)

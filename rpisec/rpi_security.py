@@ -1,0 +1,249 @@
+# -*- coding: utf-8 -*-
+
+import sys
+import os
+import time
+import yaml
+import logging
+import threading
+from configparser import SafeConfigParser
+from netaddr import IPNetwork
+from netifaces import ifaddresses
+from datetime import timedelta
+from .exit_clean import exit_error
+
+
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+
+from scapy.all import srp, Ether, ARP
+from scapy.all import conf as scapy_conf
+scapy_conf.promisc=0
+scapy_conf.sniff_promisc=0
+
+logger = logging.getLogger()
+
+
+class RpiState(object):
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.start_time = time.time()
+        self.current = 'disarmed'
+        self.previous = 'Not running'
+        self.last_change = time.time()
+        self.last_packet = time.time()
+        self.last_mac = None
+        self.triggered = False
+
+    def update_state(self, new_state):
+        assert new_state in ['armed', 'disarmed', 'disabled']
+        if new_state != self.current:
+            with self.lock:
+                self.previous = self.current
+                self.current = new_state
+                self.last_change = time.time()
+                logger.info("rpi-security is now %s" % self.current)
+                # send notification
+
+    def update_triggered(self, triggered):
+        with self.lock:
+            self.triggered = triggered
+
+    def update_last_mac(self, mac):
+        with self.lock:
+            self.last_mac = mac
+            self.last_packet = time.time()
+
+    def _get_readable_delta(self, then, now=time.time()):
+        td = timedelta(seconds=now - then)
+        days, hours, minutes = td.days, td.seconds // 3600, td.seconds // 60 % 60
+        text = '%s minutes' % minutes
+        if hours > 0:
+            text = '%s hours and ' % hours + text
+            if days > 0:
+                text = '%s days, ' % days + text
+        return text
+
+    def generate_status_text(self):
+        return """*rpi-security status*
+                Current state: _{0}_
+                Last state: _{1}_
+                Last change: _{2} ago_
+                Uptime: _{3}_
+                Last MAC detected: _{4} {5} ago_
+                Alarm triggered: _{6}_
+                """.format(
+                    self.current,
+                    self.previous,
+                    _get_readable_delta(self.last_change),
+                    _get_readable_delta(self.start_time),
+                    self.last_mac,
+                    _get_readable_delta(self.last_packet),
+                    self.alarm_triggered
+                )
+
+
+
+class RpiSecurity(object):
+    """
+    xxx
+    """
+
+    default_config = {
+        'camera_save_path': '/var/tmp',
+        'network_interface': 'mon0',
+        'packet_timeout': '700',
+        'debug_mode': 'False',
+        'pir_pin': '14',
+        'camera_vflip': 'False',
+        'camera_hflip': 'False',
+        'camera_image_size': '1024x768',
+        'camera_mode': 'video',
+        'camera_capture_length': '3'
+    }
+
+    def __init__(self, config_file, state_file):
+        self.config_file = config_file
+        self.state_file = state_file
+
+        # call this state? Confusing with other state
+        self.saved_state = self._read_state_file()
+
+        self._parse_config_file()
+        self._check_system()
+
+        self.state = RpiState()
+
+        logger.debug('Initialised: %s' % vars(self))
+
+    def _read_state_file(self):
+        """
+        Reads a state file from disk.
+        """
+        result = None
+        try:
+            with open(self.state_file, 'r') as stream:
+                result = yaml.load(stream) or None
+        except Exception as e:
+            logger.error('Failed to read state file {0}: {1}'.format(self.state_file, repr(e)))
+        else:
+            logger.debug('State file read: {0}'.format(self.state_file))
+        return result
+
+    def arp_ping_macs(self, repeat=3):
+        """
+        Performs an ARP scan of a destination MAC address to try and determine if they are present on the network.
+        """
+        def _arp_ping(mac_address):
+            result = False
+            answered,unanswered = srp(Ether(dst=mac_address)/ARP(pdst=self.network_address), timeout=1, verbose=False)
+            if len(answered) > 0:
+                for reply in answered:
+                    if reply[1].hwsrc == mac_address:
+                        if type(result) is not list:
+                            result = []
+                        result.append(str(reply[1].psrc))
+                        result = ', '.join(result)
+            return result
+        while repeat > 0:
+            for mac_address in self.mac_addresses:
+                result = _arp_ping(mac_address)
+                if result:
+                    logger.debug('MAC %s responded to ARP ping with address %s' % (mac_address, result))
+                    break
+                else:
+                    logger.debug('MAC %s did not respond to ARP ping' % mac_address)
+            if repeat > 1:
+                time.sleep(2)
+            repeat -= 1
+
+    def write_state_file(self, state_data):
+        """
+        Writes a state file to disk.
+        """
+        try:
+            with open(self.state_file, 'w') as f:
+                yaml.dump(state_data, f, default_flow_style=False)
+        except Exception as e:
+            logger.error('Failed to write state file %s: %s'.format(self.state_file, e))
+        else:
+            logger.debug('State file written: %s' % self.state_file)
+
+    def _parse_config_file(self):
+        def _str2bool(v):
+            return v.lower() in ("yes", "true", "t", "1")
+
+        cfg = SafeConfigParser(defaults=self.default_config)
+        cfg.read(self.config_file)
+
+        for k, v in cfg.items('main'):
+            setattr(self, k, v)
+
+        self.debug_mode = _str2bool(self.debug_mode)
+        self.camera_vflip = _str2bool(self.camera_vflip)
+        self.camera_hflip = _str2bool(self.camera_hflip)
+        self.pir_pin = int(self.pir_pin)
+        self.camera_image_size = tuple([int(x) for x in self.camera_image_size.split('x')])
+        self.camera_capture_length = int(self.camera_capture_length)
+        self.camera_mode = self.camera_mode.lower()
+        self.packet_timeout = int(self.packet_timeout)
+        self.mac_addresses = self.mac_addresses.lower().split(',')
+
+    def _check_system(self):
+        if not os.geteuid() == 0:
+            exit_error('%s must be run as root' % sys.argv[0])
+
+        if not self._check_monitor_mode(self.network_interface):
+            raise Exception('Monitor mode is not enabled for interface {0}'.format(self.network_interface))
+
+        self._set_interface_mac_addr()
+        self._set_network_address()
+
+    def _check_monitor_mode(self, network_interface):
+        """
+        Returns True if an interface is in monitor mode
+        """
+        result = False
+        try:
+            type_file = open('/sys/class/net/%s/type' % network_interface, 'r')
+            operstate_file = open('/sys/class/net/%s/operstate' % network_interface, 'r')
+        except:
+            pass
+        else:
+            if type_file.read().startswith('80') and not operstate_file.read().startswith('down'):
+                result = True
+        return result
+
+    def _set_interface_mac_addr(self):
+        """
+        Gets the MAC address of an interface
+        """
+        try:
+            with open('/sys/class/net/%s/address' % self.network_interface, 'r') as f:
+                self.my_mac_address = f.read().strip()
+        except FileNotFoundError:
+            raise Exception('Interface {0} does not exist'.format(self.network_interface))
+        except Exception:
+            raise Exception('Unable to get MAC address for interface {0}'.format(self.network_interface))
+
+    def _set_network_address(self):
+        """
+        Finds the corresponding normal interface for a monitor interface and
+        then calculates the subnet address of this interface
+        """
+        for interface in os.listdir('/sys/class/net'):
+            if interface in ['lo', self.network_interface]:
+                continue
+            try:
+                with open('/sys/class/net/%s/address' % interface, 'r') as f:
+                    interface_mac_address = f.read().strip()
+            except:
+                pass
+            else:
+                if interface_mac_address == self.my_mac_address:
+                    interface_details = ifaddresses(interface)
+                    my_network = IPNetwork('{0}/{1}'.format(interface_details[2][0]['addr'], interface_details[2][0]['netmask']))
+                    network_address = my_network.cidr
+                    logger.debug('Calculated network {0} from interface {1}'.format(network_address, interface))
+                    self.network_address = str(network_address)
+        if not hasattr(self, 'network_address'):
+            raise Exception('Unable to get network address for interface {0}'.format(self.network_interface))

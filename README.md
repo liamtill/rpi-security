@@ -93,7 +93,7 @@ First install required packages:
 
 ```
 sudo apt-get update
-sudo apt-get install tcpdump iw python3-dev python3-pip libjpeg8-dev zlib1g-dev
+sudo apt-get install tcpdump iw python3-dev python3-pip libjpeg8-dev zlib1g-dev libffi-dev
 sudo pip3 install --upgrade pip
 sudo pip3 --no-cache-dir install 'Pillow>=3.4.0'
 ```
