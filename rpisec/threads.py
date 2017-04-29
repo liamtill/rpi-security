@@ -91,15 +91,15 @@ def telegram_bot(rpisec):
     This function runs the telegram bot that responds to commands like /enable, /disable or /status.
     """
     def save_chat_id(bot, update):
-        if not rpisec.chat_id:
-            rpisec.save_chat_id(update.message.chat_id)
+        if not rpisec.saved_data['telegram_chat_id']:
+            rpisec.save_telegram_chat_id(update.message.chat_id)
             logger.debug('Set Telegram chat_id %s' % update.message.chat_id)
 
     def debug(bot, update):
         logger.debug('Received Telegram bot message: %s' % update.message.text)
 
     def check_chat_id(update):
-        if update.message.chat_id != rpisec.chat_id:
+        if update.message.chat_id != rpisec.saved_data['telegram_chat_id']:
             logger.debug('Ignoring Telegam update with filtered chat id %s: %s' % (update.message.chat_id, update.message.text))
             return False
         else:
@@ -111,7 +111,7 @@ def telegram_bot(rpisec):
 
     def status(bot, update):
         if check_chat_id(update):
-            bot.sendMessage(update.message.chat_id, parse_mode='Markdown', text=prepare_status(alarm_state), timeout=10)
+            bot.sendMessage(update.message.chat_id, parse_mode='Markdown', text=rpisec.state.generate_status_text(), timeout=10)
 
     def disable(bot, update):
         if check_chat_id(update):

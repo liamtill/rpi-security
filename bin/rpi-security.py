@@ -32,7 +32,7 @@ GPIO.setwarnings(False)
 def parse_arguments():
     p = argparse.ArgumentParser(description='A simple security system to run on a Raspberry Pi.')
     p.add_argument('-c', '--config_file', help='Path to config file.', default='/etc/rpi-security.conf')
-    p.add_argument('-s', '--state_file', help='Path to state file.', default='/var/lib/rpi-security/state.yaml')
+    p.add_argument('-s', '--data_file', help='Path to data file.', default='/var/lib/rpi-security/data.yaml')
     p.add_argument('-d', '--debug', help='To enable debug output to stdout', action='store_true', default=False)
     return p.parse_args()
 
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     logger.info("rpi-security starting...")
 
     try:
-        rpis = rpisec.rpi_security.RpiSecurity(args.config_file, args.state_file)
+        rpis = rpisec.rpi_security.RpiSecurity(args.config_file, args.data_file)
     except Exception as e:
         exit_error('Configuration error: {0}'.format(repr(e)))
 

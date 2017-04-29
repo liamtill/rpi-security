@@ -53,7 +53,9 @@ class RpiState(object):
             self.last_mac = mac
             self.last_packet = time.time()
 
-    def _get_readable_delta(self, then, now=time.time()):
+    def _get_readable_delta(self, then, now=None):
+        if not now:
+            now = time.time()
         td = timedelta(seconds=now - then)
         days, hours, minutes = td.days, td.seconds // 3600, td.seconds // 60 % 60
         text = '%s minutes' % minutes
@@ -64,21 +66,21 @@ class RpiState(object):
         return text
 
     def generate_status_text(self):
-        return """*rpi-security status*
-                Current state: _{0}_
-                Last state: _{1}_
-                Last change: _{2} ago_
-                Uptime: _{3}_
-                Last MAC detected: _{4} {5} ago_
-                Alarm triggered: _{6}_
+        return """*rpi-security status* \
+                \nCurrent state: _{0}_ \
+                \nLast state: _{1}_ \
+                \nLast change: _{2} ago_ \
+                \nUptime: _{3}_ \
+                \nLast MAC detected: _{4} {5} ago_ \
+                \nAlarm triggered: _{6}_ \
                 """.format(
                     self.current,
                     self.previous,
-                    _get_readable_delta(self.last_change),
-                    _get_readable_delta(self.start_time),
+                    self._get_readable_delta(self.last_change),
+                    self._get_readable_delta(self.start_time),
                     self.last_mac,
-                    _get_readable_delta(self.last_packet),
-                    self.alarm_triggered
+                    self._get_readable_delta(self.last_packet),
+                    self.triggered
                 )
 
 
@@ -101,12 +103,11 @@ class RpiSecurity(object):
         'camera_capture_length': '3'
     }
 
-    def __init__(self, config_file, state_file):
+    def __init__(self, config_file, data_file):
         self.config_file = config_file
-        self.state_file = state_file
+        self.data_file = data_file
 
-        # call this state? Confusing with other state
-        self.saved_state = self._read_state_file()
+        self.saved_data = self._read_data_file()
 
         self._parse_config_file()
         self._check_system()
@@ -115,18 +116,18 @@ class RpiSecurity(object):
 
         logger.debug('Initialised: %s' % vars(self))
 
-    def _read_state_file(self):
+    def _read_data_file(self):
         """
-        Reads a state file from disk.
+        Reads a data file from disk.
         """
         result = None
         try:
-            with open(self.state_file, 'r') as stream:
+            with open(self.data_file, 'r') as stream:
                 result = yaml.load(stream) or None
         except Exception as e:
-            logger.error('Failed to read state file {0}: {1}'.format(self.state_file, repr(e)))
+            logger.error('Failed to read state file {0}: {1}'.format(self.data_file, repr(e)))
         else:
-            logger.debug('State file read: {0}'.format(self.state_file))
+            logger.debug('State file read: {0}'.format(self.data_file))
         return result
 
     def arp_ping_macs(self, repeat=3):
@@ -156,17 +157,17 @@ class RpiSecurity(object):
                 time.sleep(2)
             repeat -= 1
 
-    def write_state_file(self, state_data):
+    def save_telegram_chat_id(self, chat_id):
         """
-        Writes a state file to disk.
+        Saves the telegram chat ID to the data file
         """
         try:
-            with open(self.state_file, 'w') as f:
-                yaml.dump(state_data, f, default_flow_style=False)
+            with open(self.data_file, 'w') as f:
+                yaml.dump({'telegram_chat_id': chat_id}, f, default_flow_style=False)
         except Exception as e:
-            logger.error('Failed to write state file %s: %s'.format(self.state_file, e))
+            logger.error('Failed to write state file %s: %s'.format(self.data_file, e))
         else:
-            logger.debug('State file written: %s' % self.state_file)
+            logger.debug('State file written: %s' % self.data_file)
 
     def _parse_config_file(self):
         def _str2bool(v):
@@ -205,11 +206,11 @@ class RpiSecurity(object):
         result = False
         try:
             type_file = open('/sys/class/net/%s/type' % network_interface, 'r')
-            operstate_file = open('/sys/class/net/%s/operstate' % network_interface, 'r')
+            operdata_file = open('/sys/class/net/%s/operstate' % network_interface, 'r')
         except:
             pass
         else:
-            if type_file.read().startswith('80') and not operstate_file.read().startswith('down'):
+            if type_file.read().startswith('80') and not operdata_file.read().startswith('down'):
                 result = True
         return result
 
