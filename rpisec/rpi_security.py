@@ -123,11 +123,11 @@ class RpiSecurity(object):
         result = None
         try:
             with open(self.data_file, 'r') as stream:
-                result = yaml.load(stream) or None
+                result = yaml.load(stream) or {}
         except Exception as e:
-            logger.error('Failed to read state file {0}: {1}'.format(self.data_file, repr(e)))
+            logger.error('Failed to read data file {0}: {1}'.format(self.data_file, repr(e)))
         else:
-            logger.debug('State file read: {0}'.format(self.data_file))
+            logger.debug('Data file read: {0}'.format(self.data_file))
         return result
 
     def arp_ping_macs(self, repeat=3):
@@ -162,6 +162,7 @@ class RpiSecurity(object):
         Saves the telegram chat ID to the data file
         """
         try:
+            self.saved_data['telegram_chat_id'] = chat_id
             with open(self.data_file, 'w') as f:
                 yaml.dump({'telegram_chat_id': chat_id}, f, default_flow_style=False)
         except Exception as e:

@@ -7,6 +7,7 @@ import os
 from .exit_clean import exit_error
 
 from telegram.ext import Updater, CommandHandler, RegexHandler
+from scapy.all import sniff
 
 logger = logging.getLogger()
 
@@ -44,7 +45,6 @@ def capture_packets(rpisec):
     the alarm state when packets are detected.
     """
     logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
-    from scapy.all import sniff
     def update_time(packet):
         packet_mac = set(rpisec.mac_addresses) & set([packet[0].addr2, packet[0].addr3])
         packet_mac_str = list(packet_mac)[0]
@@ -91,7 +91,7 @@ def telegram_bot(rpisec):
     This function runs the telegram bot that responds to commands like /enable, /disable or /status.
     """
     def save_chat_id(bot, update):
-        if not rpisec.saved_data['telegram_chat_id']:
+        if 'telegram_chat_id' not in rpisec.saved_data:
             rpisec.save_telegram_chat_id(update.message.chat_id)
             logger.debug('Set Telegram chat_id %s' % update.message.chat_id)
 
@@ -99,7 +99,7 @@ def telegram_bot(rpisec):
         logger.debug('Received Telegram bot message: %s' % update.message.text)
 
     def check_chat_id(update):
-        if update.message.chat_id != rpisec.saved_data['telegram_chat_id']:
+        if 'telegram_chat_id' in rpisec.saved_data and update.message.chat_id != rpisec.saved_data['telegram_chat_id']:
             logger.debug('Ignoring Telegam update with filtered chat id %s: %s' % (update.message.chat_id, update.message.text))
             return False
         else:
