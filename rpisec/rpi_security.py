@@ -12,6 +12,8 @@ from netifaces import ifaddresses
 from datetime import timedelta
 from .exit_clean import exit_error
 
+from telegram import Bot as TelegramBot
+
 
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
@@ -21,7 +23,6 @@ scapy_conf.promisc=0
 scapy_conf.sniff_promisc=0
 
 logger = logging.getLogger()
-
 
 class RpiState(object):
     def __init__(self):
@@ -41,8 +42,8 @@ class RpiState(object):
                 self.previous = self.current
                 self.current = new_state
                 self.last_change = time.time()
-                logger.info("rpi-security is now %s" % self.current)
-                # send notification
+                super().telegram_send_message("rpi-security is now {0}".format(self.current))
+                logger.info("rpi-security is now {0}".format(self.current))
 
     def update_triggered(self, triggered):
         with self.lock:
@@ -89,7 +90,6 @@ class RpiSecurity(object):
     """
     xxx
     """
-
     default_config = {
         'camera_save_path': '/var/tmp',
         'network_interface': 'mon0',
@@ -106,13 +106,15 @@ class RpiSecurity(object):
     def __init__(self, config_file, data_file):
         self.config_file = config_file
         self.data_file = data_file
-
         self.saved_data = self._read_data_file()
-
         self._parse_config_file()
         self._check_system()
-
         self.state = RpiState()
+
+        try:
+            self.bot = TelegramBot(token=self.telegram_bot_token)
+        except Exception as e:
+            raise Exception('Failed to connect to Telegram with error: %s' % repr(e))
 
         logger.debug('Initialised: %s' % vars(self))
 
@@ -195,7 +197,7 @@ class RpiSecurity(object):
             exit_error('%s must be run as root' % sys.argv[0])
 
         if not self._check_monitor_mode(self.network_interface):
-            raise Exception('Monitor mode is not enabled for interface {0}'.format(self.network_interface))
+            raise Exception('Monitor mode is not enabled for interface {0} or interface does not exist'.format(self.network_interface))
 
         self._set_interface_mac_addr()
         self._set_network_address()
@@ -249,3 +251,36 @@ class RpiSecurity(object):
                     self.network_address = str(network_address)
         if not hasattr(self, 'network_address'):
             raise Exception('Unable to get network address for interface {0}'.format(self.network_interface))
+
+    def telegram_send_message(self, message):
+        if 'telegram_chat_id' not in self.saved_data:
+            logger.error('Telegram failed to send message because Telegram chat_id is not set. Send a message to the Telegram bot')
+            return False
+        try:
+            self.bot.sendMessage(chat_id=self.saved_data['telegram_chat_id'], parse_mode='Markdown', text=message, timeout=10)
+        except Exception as e:
+            logger.error('Telegram message failed to send message "%s" with exception: %s' % (message, e))
+        else:
+            logger.info('Telegram message Sent: "%s"' % message)
+            return True
+
+    def telegram_send_file(self, file_path):
+        if 'telegram_chat_id' not in rpisec.saved_data:
+            logger.error('Telegram failed to send file %s because Telegram chat_id is not set. Send a message to the Telegram bot' % file_path)
+            return False
+        filename, file_extension = os.path.splitext(file_path)
+        try:
+            if file_extension == '.mp4':
+                bot.sendVideo(chat_id=self.saved_data['telegram_chat_id'], video=open(file_path, 'rb'), timeout=30)
+            elif file_extension == '.gif':
+                bot.sendDocument(chat_id=self.saved_data['telegram_chat_id'], document=open(file_path, 'rb'), timeout=30)
+            elif file_extension == '.jpeg':
+                bot.sendPhoto(chat_id=self.saved_data['telegram_chat_id'], photo=open(file_path, 'rb'), timeout=10)
+            else:
+                logger.error('Uknown file not sent: %s' % file_path)
+        except Exception as e:
+            logger.error('Telegram failed to send file %s with exception: %s' % (file_path, e))
+            return False
+        else:
+            logger.info('Telegram file sent: %s' % file_path)
+            return True

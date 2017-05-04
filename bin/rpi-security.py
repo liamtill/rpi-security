@@ -21,7 +21,6 @@ import rpisec
 import picamera
 
 
-from telegram import Bot
 from threading import Thread, current_thread
 from queue import Queue
 from PIL import Image
@@ -70,9 +69,10 @@ if __name__ == "__main__":
     try:
         rpis = rpisec.rpi_security.RpiSecurity(args.config_file, args.data_file)
     except Exception as e:
-        exit_error('Configuration error: {0}'.format(repr(e)))
+        rpisec.exit_error('Configuration error: {0}'.format(repr(e)))
 
     sys.excepthook = rpisec.exception_handler
+
     camera_queue = Queue()
 
     try:
@@ -82,12 +82,7 @@ if __name__ == "__main__":
         camera.hflip = rpis.camera_hflip
         camera.led = False
     except Exception as e:
-        exit_error('Camera module failed to intialise with error %s' % e)
-
-    try:
-        bot = Bot(token=rpis.telegram_bot_token)
-    except Exception as e:
-        exit_error('Failed to connect to Telegram with error: %s' % e)
+        rpisec.exit_error('Camera module failed to intialise with error %s' % e)
 
     # Start the threads
     telegram_bot_thread = Thread(name='telegram_bot', target=rpisec.threads.telegram_bot, args=(rpis,))
@@ -99,15 +94,15 @@ if __name__ == "__main__":
     capture_packets_thread = Thread(name='capture_packets', target=rpisec.threads.capture_packets, args=(rpis,))
     capture_packets_thread.daemon = True
     capture_packets_thread.start()
-    # process_photos_thread = Thread(name='process_photos', target=process_photos, args=(rpis,))
-    # process_photos_thread.daemon = True
-    # process_photos_thread.start()
+    process_photos_thread = Thread(name='process_photos', target=rpisec.threads.process_photos, args=(rpis, camera_queue))
+    process_photos_thread.daemon = True
+    process_photos_thread.start()
     signal.signal(signal.SIGTERM, rpisec.exit_clean)
     try:
         # GPIO.setup(rpis.pir_pin, GPIO.IN)
         # GPIO.add_event_detect(rpis.pir_pin, GPIO.RISING, callback=motion_detected)
         logger.info("rpi-security running")
-        # telegram_send_message('rpi-security running')
+        rpis.telegram_send_message('rpi-security running')
         while True:
             time.sleep(100)
     except KeyboardInterrupt:

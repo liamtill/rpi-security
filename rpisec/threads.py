@@ -5,21 +5,20 @@ import time
 import sys
 import os
 from .exit_clean import exit_error
-
 from telegram.ext import Updater, CommandHandler, RegexHandler
 from scapy.all import sniff
+
 
 logger = logging.getLogger()
 
 
-def process_photos(rpisec):
+def process_photos(rpisec, camera_queue):
     """
     Monitors the captured_from_camera list for newly captured photos.
     When a new photos are present it will run arp_ping_macs to remove false positives and then send the photos via Telegram.
     After successfully sendind the photo it will also archive the photo and remove it from the list.
     """
     logger.info("thread running")
-    global camera_queue
     while True:
         if not camera_queue.empty():
             if rpisec.state.current == 'armed':

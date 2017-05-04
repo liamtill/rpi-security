@@ -101,7 +101,8 @@ sudo pip3 --no-cache-dir install 'Pillow>=3.4.0'
 Install rpi-security, reload systemd configuration and enable the service:
 
 ```
-sudo pip3 install https://github.com/FutureSharks/rpi-security/zipball/master
+sudo pip3 install https://github.com/django/django/archive/master.zip
+sudo pip3 install https://github.com/FutureSharks/rpi-security/archive/master.zip
 sudo systemctl daemon-reload
 sudo systemctl enable rpi-security.service
 ```
