@@ -22,6 +22,8 @@ Use python 3
 
 Use queue for camera photos
 
-rename save_state to save_data
-
 Check for needless imports
+
+rename module without hyphen?
+
+create use rpisecurity.core instead?

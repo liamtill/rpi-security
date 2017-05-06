@@ -25,7 +25,8 @@ scapy_conf.sniff_promisc=0
 logger = logging.getLogger()
 
 class RpiState(object):
-    def __init__(self):
+    def __init__(self, rpis):
+        self.rpis = rpis
         self.lock = threading.Lock()
         self.start_time = time.time()
         self.current = 'disarmed'
@@ -42,7 +43,7 @@ class RpiState(object):
                 self.previous = self.current
                 self.current = new_state
                 self.last_change = time.time()
-                super().telegram_send_message("rpi-security is now {0}".format(self.current))
+                self.rpis.telegram_send_message("rpi-security is now {0}".format(self.current))
                 logger.info("rpi-security is now {0}".format(self.current))
 
     def update_triggered(self, triggered):
@@ -109,7 +110,7 @@ class RpiSecurity(object):
         self.saved_data = self._read_data_file()
         self._parse_config_file()
         self._check_system()
-        self.state = RpiState()
+        self.state = RpiState(self)
 
         try:
             self.bot = TelegramBot(token=self.telegram_bot_token)
@@ -196,20 +197,20 @@ class RpiSecurity(object):
         if not os.geteuid() == 0:
             exit_error('%s must be run as root' % sys.argv[0])
 
-        if not self._check_monitor_mode(self.network_interface):
+        if not self._check_monitor_mode():
             raise Exception('Monitor mode is not enabled for interface {0} or interface does not exist'.format(self.network_interface))
 
         self._set_interface_mac_addr()
         self._set_network_address()
 
-    def _check_monitor_mode(self, network_interface):
+    def _check_monitor_mode(self):
         """
         Returns True if an interface is in monitor mode
         """
         result = False
         try:
-            type_file = open('/sys/class/net/%s/type' % network_interface, 'r')
-            operdata_file = open('/sys/class/net/%s/operstate' % network_interface, 'r')
+            type_file = open('/sys/class/net/%s/type' % self.network_interface, 'r')
+            operdata_file = open('/sys/class/net/%s/operstate' % self.network_interface, 'r')
         except:
             pass
         else:
