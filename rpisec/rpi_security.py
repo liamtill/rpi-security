@@ -49,7 +49,8 @@ class RpiCamera(object):
         Captures a photo and saves it disk.
         """
         try:
-            self.camera.capture(output_file)
+            with self.lock:
+                self.camera.capture(output_file)
         except Exception as e:
             logger.error('Failed to take photo: %s' % e)
             return False
@@ -62,7 +63,8 @@ class RpiCamera(object):
         jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
         try:
             for jpeg in jpeg_files:
-                self.camera.capture(jpeg, resize=(800,600))
+                with self.lock:
+                    self.camera.capture(jpeg, resize=(800,600))
             im=Image.open(jpeg_files[0])
             jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
             ims = [Image.open(i) for i in jpeg_files_no_first_frame]

@@ -75,8 +75,8 @@ def monitor_alarm_state(rpisec):
     logger.info("thread running")
     while True:
         time.sleep(0.1)
-        now = time.time()
         if rpisec.state.current is not 'disabled':
+            now = time.time()
             if now - rpisec.state.last_packet > rpisec.packet_timeout + 20:
                 rpisec.state.update_state('armed')
             elif now - rpisec.state.last_packet > rpisec.packet_timeout:
