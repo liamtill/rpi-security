@@ -6,14 +6,17 @@ import time
 import yaml
 import logging
 import threading
+from datetime import datetime
 from configparser import SafeConfigParser
 from netaddr import IPNetwork
 from netifaces import ifaddresses
 from datetime import timedelta
 from .exit_clean import exit_error
-
+from threading import Lock
+import picamera
+from queue import Queue
 from telegram import Bot as TelegramBot
-
+from PIL import Image
 
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
 
@@ -22,7 +25,60 @@ from scapy.all import conf as scapy_conf
 scapy_conf.promisc=0
 scapy_conf.sniff_promisc=0
 
+
 logger = logging.getLogger()
+
+
+class RpiCamera(object):
+    def __init__(self, rpis):
+        self.rpis = rpis
+        self.lock = threading.Lock()
+        self.queue = Queue()
+
+        try:
+            self.camera = picamera.PiCamera()
+            self.camera.resolution = rpis.camera_image_size
+            self.camera.vflip = rpis.camera_vflip
+            self.camera.hflip = rpis.camera_hflip
+            self.camera.led = False
+        except Exception as e:
+            rpisec.exit_error('Camera module failed to intialise with error %s' % e)
+
+    def take_photo(self, output_file):
+        """
+        Captures a photo and saves it disk.
+        """
+        try:
+            self.camera.capture(output_file)
+        except Exception as e:
+            logger.error('Failed to take photo: %s' % e)
+            return False
+        else:
+            logger.info("Captured image: %s" % output_file)
+            return True
+
+    def take_gif(self, output_file, length, temp_directory):
+        temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
+        jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
+        try:
+            for jpeg in jpeg_files:
+                self.camera.capture(jpeg, resize=(800,600))
+            im=Image.open(jpeg_files[0])
+            jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
+            ims = [Image.open(i) for i in jpeg_files_no_first_frame]
+            im.save(output_file, append_images=ims, save_all=True, loop=0, duration=200)
+            im.close()
+            for imfile in ims:
+                imfile.close()
+            for jpeg in jpeg_files:
+                os.remove(jpeg)
+        except Exception as e:
+            logger.error('Failed to create GIF: %s' % e)
+            return False
+        else:
+            logger.info("Captured gif: %s" % output_file)
+            return True
+
 
 class RpiState(object):
     def __init__(self, rpis):
@@ -111,6 +167,7 @@ class RpiSecurity(object):
         self._parse_config_file()
         self._check_system()
         self.state = RpiState(self)
+        self.camera = RpiCamera(self)
 
         try:
             self.bot = TelegramBot(token=self.telegram_bot_token)
@@ -165,6 +222,7 @@ class RpiSecurity(object):
         Saves the telegram chat ID to the data file
         """
         try:
+            # Use a lock here?
             self.saved_data['telegram_chat_id'] = chat_id
             with open(self.data_file, 'w') as f:
                 yaml.dump({'telegram_chat_id': chat_id}, f, default_flow_style=False)
@@ -266,17 +324,17 @@ class RpiSecurity(object):
             return True
 
     def telegram_send_file(self, file_path):
-        if 'telegram_chat_id' not in rpisec.saved_data:
+        if 'telegram_chat_id' not in self.saved_data:
             logger.error('Telegram failed to send file %s because Telegram chat_id is not set. Send a message to the Telegram bot' % file_path)
             return False
         filename, file_extension = os.path.splitext(file_path)
         try:
             if file_extension == '.mp4':
-                bot.sendVideo(chat_id=self.saved_data['telegram_chat_id'], video=open(file_path, 'rb'), timeout=30)
+                self.bot.sendVideo(chat_id=self.saved_data['telegram_chat_id'], video=open(file_path, 'rb'), timeout=30)
             elif file_extension == '.gif':
-                bot.sendDocument(chat_id=self.saved_data['telegram_chat_id'], document=open(file_path, 'rb'), timeout=30)
+                self.bot.sendDocument(chat_id=self.saved_data['telegram_chat_id'], document=open(file_path, 'rb'), timeout=30)
             elif file_extension == '.jpeg':
-                bot.sendPhoto(chat_id=self.saved_data['telegram_chat_id'], photo=open(file_path, 'rb'), timeout=10)
+                self.bot.sendPhoto(chat_id=self.saved_data['telegram_chat_id'], photo=open(file_path, 'rb'), timeout=10)
             else:
                 logger.error('Uknown file not sent: %s' % file_path)
         except Exception as e:

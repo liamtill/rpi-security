@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import datetime
+
 
 def motion_detected(channel):
     """
@@ -22,40 +24,3 @@ def motion_detected(channel):
             logger.error("Unkown camera_mode %s" % config.camera_mode)
     else:
         logger.debug('Motion detected but current_state is: %s' % current_state)
-
-
-def take_photo(output_file):
-    """
-    Captures a photo and saves it disk.
-    """
-    try:
-        camera.capture(output_file)
-    except Exception as e:
-        logger.error('Failed to take photo: %s' % e)
-        return False
-    else:
-        logger.info("Captured image: %s" % output_file)
-        return True
-
-
-def take_gif(output_file, length, temp_directory):
-    temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
-    jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
-    try:
-        for jpeg in jpeg_files:
-            camera.capture(jpeg, resize=(800,600))
-        im=Image.open(jpeg_files[0])
-        jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
-        ims = [Image.open(i) for i in jpeg_files_no_first_frame]
-        im.save(output_file, append_images=ims, save_all=True, loop=0, duration=200)
-        im.close()
-        for imfile in ims:
-            imfile.close()
-        for jpeg in jpeg_files:
-            os.remove(jpeg)
-    except Exception as e:
-        logger.error('Failed to create GIF: %s' % e)
-        return False
-    else:
-        logger.info("Captured gif: %s" % output_file)
-        return True

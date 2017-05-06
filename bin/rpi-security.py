@@ -15,15 +15,7 @@ import signal
 sys.path.insert(0, ".")
 
 import rpisec
-
-
-# Now begin importing slow modules and setting up camera, Telegram and threads
-import picamera
-
-
 from threading import Thread, current_thread
-from queue import Queue
-from PIL import Image
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
@@ -62,6 +54,7 @@ def setup_logging(debug_mode=False, log_to_stdout=False):
 if __name__ == "__main__":
     args = parse_arguments()
 
+    # Fix this
     logger = setup_logging(debug_mode=True, log_to_stdout=args.debug)
 
     logger.info("rpi-security starting...")
@@ -73,16 +66,7 @@ if __name__ == "__main__":
 
     sys.excepthook = rpisec.exception_handler
 
-    camera_queue = Queue()
 
-    try:
-        camera = picamera.PiCamera()
-        camera.resolution = rpis.camera_image_size
-        camera.vflip = rpis.camera_vflip
-        camera.hflip = rpis.camera_hflip
-        camera.led = False
-    except Exception as e:
-        rpisec.exit_error('Camera module failed to intialise with error %s' % e)
 
     # Start the threads
     telegram_bot_thread = Thread(name='telegram_bot', target=rpisec.threads.telegram_bot, args=(rpis,))
@@ -94,7 +78,7 @@ if __name__ == "__main__":
     capture_packets_thread = Thread(name='capture_packets', target=rpisec.threads.capture_packets, args=(rpis,))
     capture_packets_thread.daemon = True
     capture_packets_thread.start()
-    process_photos_thread = Thread(name='process_photos', target=rpisec.threads.process_photos, args=(rpis, camera_queue))
+    process_photos_thread = Thread(name='process_photos', target=rpisec.threads.process_photos, args=(rpis,))
     process_photos_thread.daemon = True
     process_photos_thread.start()
     signal.signal(signal.SIGTERM, rpisec.exit_clean)

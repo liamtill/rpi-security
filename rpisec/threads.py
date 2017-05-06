@@ -4,6 +4,7 @@ import logging
 import time
 import sys
 import os
+from datetime import datetime
 from .exit_clean import exit_error
 from telegram.ext import Updater, CommandHandler, RegexHandler
 from scapy.all import sniff
@@ -12,7 +13,7 @@ from scapy.all import sniff
 logger = logging.getLogger()
 
 
-def process_photos(rpisec, camera_queue):
+def process_photos(rpisec):
     """
     Monitors the captured_from_camera list for newly captured photos.
     When a new photos are present it will run arp_ping_macs to remove false positives and then send the photos via Telegram.
@@ -20,21 +21,21 @@ def process_photos(rpisec, camera_queue):
     """
     logger.info("thread running")
     while True:
-        if not camera_queue.empty():
+        if not rpisec.camera.queue.empty():
             if rpisec.state.current == 'armed':
                 rpisec.arp_ping_macs()
                 while True:
-                    photo = camera_queue.get()
+                    photo = rpisec.camera.queue.get()
                     if photo is None or rpisec.state.current != 'armed':
                         break
                     logger.debug('Processing the photo: %s' % photo)
                     rpisec.state.update_triggered(True)
-                    if telegram_send_file(photo):
+                    if rpisec.telegram_send_file(photo):
                         archive_photo(photo)
                         photo.task_done()
             else:
                 logger.debug('Stopping photo processing as state is now %s and clearing queue' % rpisec.state.current)
-                camera_queue.queue.clear()
+                rpisec.camera.queue.clear()
         time.sleep(0.1)
 
 
@@ -123,14 +124,14 @@ def telegram_bot(rpisec):
     def photo(bot, update):
         if check_chat_id(update):
             file_path = rpisec.camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + '.jpeg'
-            take_photo(file_path)
-            telegram_send_file(file_path)
+            rpisec.camera.take_photo(file_path)
+            rpisec.telegram_send_file(file_path)
 
     def gif(bot, update):
         if check_chat_id(update):
             file_path = rpisec.camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + '.gif'
-            take_gif(file_path, rpisec.camera_capture_length, rpisec.camera_save_path)
-            telegram_send_file(file_path)
+            rpisec.camera.take_gif(file_path, rpisec.camera_capture_length, rpisec.camera_save_path)
+            rpisec.telegram_send_file(file_path)
 
     def error(bot, update, error):
         logger.error('Update "%s" caused error "%s"' % (update, error))

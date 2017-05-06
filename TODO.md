@@ -27,3 +27,5 @@ Check for needless imports
 rename module without hyphen?
 
 create use rpisecurity.core instead?
+
+Check CPU usage
