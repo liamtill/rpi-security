@@ -19,13 +19,13 @@ setup(
     install_requires=[
         'python-telegram-bot',
         'picamera',
+        'numpy',
         'configparser',
         'requests',
         'requests[security]',
         'netaddr',
         'netifaces',
         'pyyaml',
-        'RPi.GPIO',
         'scapy-python3',
         'Pillow>=3.4.0'
     ],

@@ -5,7 +5,6 @@ import os
 import time
 import yaml
 import logging
-import threading
 from datetime import datetime
 from configparser import SafeConfigParser
 from netaddr import IPNetwork
@@ -13,12 +12,16 @@ from netifaces import ifaddresses
 from datetime import timedelta
 from .exit_clean import exit_error
 from threading import Lock
-import picamera
 from queue import Queue
 from telegram import Bot as TelegramBot
 from PIL import Image
 
 logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+
+from picamera.array import PiMotionAnalysis
+from picamera import PiCamera
+
+import numpy as np
 
 from scapy.all import srp, Ether, ARP
 from scapy.all import conf as scapy_conf
@@ -29,20 +32,39 @@ scapy_conf.sniff_promisc=0
 logger = logging.getLogger()
 
 
+class MotionDetector(PiMotionAnalysis):
+    def motion_detected(self):
+        logger.info('Motion detected')
+
+    def analyse(self, a):
+        a = np.sqrt(
+            np.square(a['x'].astype(np.float)) +
+            np.square(a['y'].astype(np.float))
+        ).clip(0, 255).astype(np.uint8)
+        vector_count = (a > 60).sum()
+        if vector_count > 10:
+            self.motion_detected()
+
+
 class RpiCamera(object):
     def __init__(self, rpis):
         self.rpis = rpis
-        self.lock = threading.Lock()
+        self.lock = Lock()
         self.queue = Queue()
+        self.motion_magnitude = 60
+        self.motion_vectors = 10
+        self.motion_framerate = 24
 
         try:
-            self.camera = picamera.PiCamera()
+            self.camera = PiCamera()
             self.camera.resolution = rpis.camera_image_size
             self.camera.vflip = rpis.camera_vflip
             self.camera.hflip = rpis.camera_hflip
             self.camera.led = False
         except Exception as e:
             rpisec.exit_error('Camera module failed to intialise with error %s' % e)
+
+        self.motion_detector = MotionDetector(self.camera)
 
     def take_photo(self, output_file):
         """
@@ -81,11 +103,28 @@ class RpiCamera(object):
             logger.info("Captured gif: %s" % output_file)
             return True
 
+    def start_motion_detection(self):
+        logger.debug("Starting motion detection")
+        self.lock.acquire()
+        self.camera.resolution = (1280, 720)
+        self.camera.framerate = 24
+        self.camera.start_recording(os.devnull, format='h264', motion_output=self.motion_detector)
+
+    def stop_motion_detection(self):
+        try:
+            self.camera.stop_recording()
+        except AttributeError:
+            pass
+        if not self.camera.recording:
+            self.lock.release()
+            logger.debug("Stopped motion detection")
+        else:
+            logger.error("Stop of motion detection failed")
 
 class RpiState(object):
     def __init__(self, rpis):
         self.rpis = rpis
-        self.lock = threading.Lock()
+        self.lock = Lock()
         self.start_time = time.time()
         self.current = 'disarmed'
         self.previous = 'Not running'
@@ -162,14 +201,18 @@ class RpiSecurity(object):
         'camera_capture_length': '3'
     }
 
-    def __init__(self, config_file, data_file):
+    def __init__(self, config_file = '/etc/rpi-security.conf', data_file = '/var/lib/rpi-security/data.yaml'):
         self.config_file = config_file
         self.data_file = data_file
         self.saved_data = self._read_data_file()
         self._parse_config_file()
         self._check_system()
         self.state = RpiState(self)
-        self.camera = RpiCamera(self)
+
+        try:
+            self.camera = RpiCamera(self)
+        except Exception as e:
+            raise Exception('Failed to initialise camera with error: %s' % repr(e))
 
         try:
             self.bot = TelegramBot(token=self.telegram_bot_token)

@@ -11,6 +11,7 @@ logger = logging.getLogger()
 def exit_cleanup():
     #GPIO.cleanup()
     if 'camera' in vars():
+        camera.stop_recording()
         camera.close()
 
 

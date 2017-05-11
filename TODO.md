@@ -29,3 +29,7 @@ rename module without hyphen?
 create use rpisecurity.core instead?
 
 Check CPU usage
+
+Remove string formatting like ''%s-%s.jpg' % '
+
+Stop debug from telegram bot

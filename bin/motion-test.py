@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import picamera
 import numpy as np
@@ -5,24 +7,14 @@ from picamera.array import PiMotionAnalysis
 import time
 
 MOTION_MAGNITUDE = 60
-MOTION_VECTORS = 20
+MOTION_VECTORS = 10
 
 camera = picamera.PiCamera()
 camera.framerate = 24
-
-capturing_photo = False
+camera.resolution = (1280, 720)
 
 def motion_detected():
     print('Detected motion!')
-    capturing_photo = True
-    time.sleep(1)
-    camera.stop_recording()
-    time.sleep(1)
-    camera.resolution = (2592, 1944)
-    time.sleep(1)
-    camera.capture('full-size.jpeg')
-    time.sleep(1)
-    capturing_photo = False
 
 class MyMotionDetector(PiMotionAnalysis):
     def analyse(self, a):
@@ -38,10 +30,8 @@ motion_detector = MyMotionDetector(camera)
 
 try:
     while True:
-        time.sleep(1)
-        if not camera.recording and not capturing_photo:
+        if not camera.recording:
             print('Starting detection')
-            camera.resolution = (1280, 720)
             camera.start_recording(os.devnull, format='h264', motion_output=motion_detector)
         if camera.recording:
             print('wait_recording')
