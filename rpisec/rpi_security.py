@@ -104,6 +104,8 @@ class RpiCamera(object):
             return True
 
     def start_motion_detection(self):
+        if self.camera.recording:
+            return
         logger.debug("Starting motion detection")
         self.lock.acquire()
         self.camera.resolution = (1280, 720)
@@ -111,6 +113,8 @@ class RpiCamera(object):
         self.camera.start_recording(os.devnull, format='h264', motion_output=self.motion_detector)
 
     def stop_motion_detection(self):
+        if not self.camera.recording:
+            return
         try:
             self.camera.stop_recording()
         except AttributeError:
@@ -164,15 +168,28 @@ class RpiState(object):
                 text = '%s days, ' % days + text
         return text
 
+    def check(self):
+        if self.current is 'disabled':
+            return
+        now = time.time()
+        if now - self.last_packet > self.rpis.packet_timeout + 20:
+            self.update_state('armed')
+        elif now - self.last_packet > self.last_packet:
+            logger.info("Running arp_ping_macs before arming...")
+            self.rpis.arp_ping_macs()
+        else:
+            self.update_state('disarmed')
+
     def generate_status_text(self):
-        return """*rpi-security status* \
-                \nCurrent state: _{0}_ \
-                \nLast state: _{1}_ \
-                \nLast change: _{2} ago_ \
-                \nUptime: _{3}_ \
-                \nLast MAC detected: _{4} {5} ago_ \
-                \nAlarm triggered: _{6}_ \
-                """.format(
+        return (
+            "*rpi-security status*\n"
+            "Current state: _{0}_ \n"
+            "Last state: _{1}_ \n"
+            "Last change: _{2} ago_ \n"
+            "Uptime: _{3}_ \n"
+            "Last MAC detected: _{4} {5} ago_ \n"
+            "Alarm triggered: _{6}_ \n"
+            ).format(
                     self.current,
                     self.previous,
                     self._get_readable_delta(self.last_change),

@@ -75,21 +75,18 @@ def monitor_alarm_state(rpisec):
     logger.info("thread running")
     while True:
         time.sleep(0.1)
-        if rpisec.state.current is not 'disabled':
-            now = time.time()
-            if now - rpisec.state.last_packet > rpisec.packet_timeout + 20:
-                rpisec.state.update_state('armed')
-            elif now - rpisec.state.last_packet > rpisec.packet_timeout:
-                logger.info("Running arp_ping_macs before arming...")
-                rpisec.arp_ping_macs()
-            else:
-                rpisec.state.update_state('disarmed')
+        rpisec.state.check()
+        if rpisec.state.current is 'armed':
+            rpisec.camera.start_motion_detection()
+        else:
+            rpisec.camera.stop_motion_detection()
 
 
 def telegram_bot(rpisec):
     """
     This function runs the telegram bot that responds to commands like /enable, /disable or /status.
     """
+    logging.getLogger("telegram").setLevel(logging.ERROR)
     def save_chat_id(bot, update):
         if 'telegram_chat_id' not in rpisec.saved_data:
             rpisec.save_telegram_chat_id(update.message.chat_id)
