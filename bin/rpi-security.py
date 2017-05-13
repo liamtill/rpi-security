@@ -54,7 +54,7 @@ if __name__ == "__main__":
     logger = setup_logging(debug_mode=True, log_to_stdout=args.debug)
 
     try:
-        rpis = rpisec.rpi_security.RpiSecurity(args.config_file, args.data_file)
+        rpis = rpisec.RpisSecurity(args.config_file, args.data_file)
     except Exception as e:
         rpisec.exit_error('Configuration error: {0}'.format(repr(e)))
 
