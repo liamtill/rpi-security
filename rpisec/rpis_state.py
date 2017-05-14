@@ -55,10 +55,10 @@ class RpisState(object):
         if self.current is 'disabled':
             return
         now = time.time()
-        if now - self.last_packet > self.rpis.packet_timeout + 20:
+        if now - self.last_packet > (self.rpis.packet_timeout + 20):
             self.update_state('armed')
-        elif now - self.last_packet > self.last_packet:
-            logger.info("Running arp_ping_macs before arming...")
+        elif now - self.last_packet > self.rpis.packet_timeout:
+            logger.debug("Running arp_ping_macs before arming...")
             self.rpis.arp_ping_macs()
         else:
             self.update_state('disarmed')

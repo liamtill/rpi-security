@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from picamera.array import PiMotionAnalysis
 from picamera import PiCamera
 import numpy as np
@@ -23,12 +24,14 @@ class RpisCamera(object):
         self.motion_magnitude = 60
         self.motion_vectors = 10
         self.motion_framerate = 24
+        self.gif_size = (800,600)
+        self.motion_detection_size = (1280, 720)
 
         try:
             self.camera = PiCamera()
-            self.camera.resolution = rpis.camera_image_size
-            self.camera.vflip = rpis.camera_vflip
-            self.camera.hflip = rpis.camera_hflip
+            self.camera.resolution = self.rpis.camera_image_size
+            self.camera.vflip = self.rpis.camera_vflip
+            self.camera.hflip = self.rpis.camera_hflip
             self.camera.led = False
         except Exception as e:
             exit_error('Camera module failed to intialise with error %s' % e)
@@ -41,7 +44,10 @@ class RpisCamera(object):
         """
         try:
             with self.lock:
-                self.camera.capture(output_file)
+                while self.camera.recording:
+                    time.sleep(0.1)
+                self.camera.resolution = self.rpis.camera_image_size
+                self.camera.capture(output_file, use_video_port=False)
         except Exception as e:
             logger.error('Failed to take photo: %s' % e)
             return False
@@ -55,7 +61,8 @@ class RpisCamera(object):
         try:
             for jpeg in jpeg_files:
                 with self.lock:
-                    self.camera.capture(jpeg, resize=(800,600))
+                    self.camera.resolution = self.gif_size
+                    self.camera.capture(jpeg)
             im=Image.open(jpeg_files[0])
             jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
             ims = [Image.open(i) for i in jpeg_files_no_first_frame]
@@ -66,33 +73,50 @@ class RpisCamera(object):
             for jpeg in jpeg_files:
                 os.remove(jpeg)
         except Exception as e:
-            logger.error('Failed to create GIF: %s' % e)
+            logger.error('Failed to create GIF: %s' % repr(e))
             return False
         else:
             logger.info("Captured gif: %s" % output_file)
             return True
 
     def start_motion_detection(self):
-        if self.camera.recording:
-            return
         logger.debug("Starting motion detection")
-        self.lock.acquire()
-        self.camera.resolution = (1280, 720)
-        self.camera.framerate = 24
-        self.camera.start_recording(os.devnull, format='h264', motion_output=self.motion_detector)
-
-    def stop_motion_detection(self):
-        if not self.camera.recording:
-            return
-        try:
-            self.camera.stop_recording()
-        except AttributeError:
-            pass
-        if not self.camera.recording:
-            self.lock.release()
-            logger.debug("Stopped motion detection")
+        while self.rpis.state.current is 'armed':
+            time.sleep(0.1)
+            while not self.lock.locked():
+                if self.rpis.state.current is not 'armed':
+                    break
+                if self.camera.recording:
+                    try:
+                        self.camera.wait_recording(0.1)
+                    except Exception as e:
+                        logger.error('Error in wait_recording: %s' % repr(e))
+                else:
+                    self.camera.resolution = self.motion_detection_size
+                    self.camera.framerate = 24
+                    self.camera.start_recording(os.devnull, format='h264', motion_output=self.motion_detector)
+                    logger.debug("Motion detection started")
+            else:
+                if self.camera.recording:
+                    self.camera.stop_recording()
+                    logger.debug("Motion detection stopped")
         else:
-            logger.error("Stop of motion detection failed")
+            if self.camera.recording:
+                self.camera.stop_recording()
+                logger.debug("Motion detection stopped")
+
+    # def stop_motion_detection(self):
+    #     if not self.camera.recording:
+    #         return
+    #     try:
+    #         self.camera.stop_recording()
+    #     except AttributeError:
+    #         pass
+    #     if not self.camera.recording:
+    #         self.lock.release()
+    #         logger.debug("Stopped motion detection")
+    #     else:
+    #         logger.error("Stop of motion detection failed")
 
 
 class MotionDetector(PiMotionAnalysis):

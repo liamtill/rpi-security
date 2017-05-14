@@ -65,12 +65,12 @@ def telegram_bot(rpisec):
         dp = updater.dispatcher
         dp.add_handler(RegexHandler('.*', save_chat_id), group=1)
         dp.add_handler(RegexHandler('.*', debug), group=2)
-        dp.add_handler(CommandHandler("help", help))
-        dp.add_handler(CommandHandler("status", status))
-        dp.add_handler(CommandHandler("disable", disable))
-        dp.add_handler(CommandHandler("enable", enable))
-        dp.add_handler(CommandHandler("photo", photo))
-        dp.add_handler(CommandHandler("gif", gif))
+        dp.add_handler(CommandHandler("help", help), group=3)
+        dp.add_handler(CommandHandler("status", status), group=3)
+        dp.add_handler(CommandHandler("disable", disable), group=3)
+        dp.add_handler(CommandHandler("enable", enable), group=3)
+        dp.add_handler(CommandHandler("photo", photo), group=3)
+        dp.add_handler(CommandHandler("gif", gif), group=3)
         dp.add_error_handler(error_callback)
         updater.start_polling(timeout=10)
     except Exception as e:
