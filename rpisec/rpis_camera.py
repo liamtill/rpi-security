@@ -61,6 +61,8 @@ class RpisCamera(object):
         try:
             for jpeg in jpeg_files:
                 with self.lock:
+                    while self.camera.recording:
+                        time.sleep(0.1)
                     self.camera.resolution = self.gif_size
                     self.camera.capture(jpeg)
             im=Image.open(jpeg_files[0])
@@ -105,21 +107,11 @@ class RpisCamera(object):
                 self.camera.stop_recording()
                 logger.debug("Motion detection stopped")
 
-    # def stop_motion_detection(self):
-    #     if not self.camera.recording:
-    #         return
-    #     try:
-    #         self.camera.stop_recording()
-    #     except AttributeError:
-    #         pass
-    #     if not self.camera.recording:
-    #         self.lock.release()
-    #         logger.debug("Stopped motion detection")
-    #     else:
-    #         logger.error("Stop of motion detection failed")
-
 
 class MotionDetector(PiMotionAnalysis):
+    motion_magnitude = 60
+    motion_vectors = 10
+
     def motion_detected(self):
         logger.info('Motion detected')
 
@@ -128,6 +120,6 @@ class MotionDetector(PiMotionAnalysis):
             np.square(a['x'].astype(np.float)) +
             np.square(a['y'].astype(np.float))
         ).clip(0, 255).astype(np.uint8)
-        vector_count = (a > 60).sum()
-        if vector_count > 10:
+        vector_count = (a > motion_magnitude).sum()
+        if vector_count > motion_vectors:
             self.motion_detected()
