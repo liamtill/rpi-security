@@ -531,7 +531,7 @@ def detect_motion():
             if config['ipcam']: # ip cam
                 grabbed, bytes, frame = get_ip_stream(bytes, st0)
 
-            # possible resize
+            # possible resize as using the full image resolution may be inefficient!
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # convert to grayscale
             # smooth image, to average pixel intensities across a box of size 21x21, can play with this but 21x21 seems to work nice
             # helps smooth out noise. Maybe use adaptive threshold?
