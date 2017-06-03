@@ -508,6 +508,8 @@ def detect_motion():
     telegram_send_message('rpi-security running')
 
     avg = None # init avg of frames
+    kernel = np.ones((5, 5), np.uint8)  # make kernel for erode and dilate. Can play with size of array but 5,5 seems to work good.
+
     if config['ipcam']: # init stream for ip cam
         global st0 # probably shouldnt use a global variable but it works for now
         bytes, st0 = make_ip_stream() # make stream for monitoring
@@ -548,7 +550,6 @@ def detect_motion():
             delta = cv2.absdiff(gray, cv2.convertScaleAbs(avg)) # difference between frame and average
             # make image of black and white if pixels over given threshold
             thresh = cv2.threshold(delta, config['delta_thresh'], 255, cv2.THRESH_BINARY)[1]
-            kernel = np.ones((5, 5), np.uint8) # make kernel for erode and dilate. Can play with size of array but 5,5 seems to work good.
             thresh = cv2.erode(thresh, kernel, iterations=2) # do erosion, useful for removing white noise, as well as gaussian blur above
             thresh = cv2.dilate(thresh, kernel, iterations=2) # dilate white, now noise is removed. As per..
             #http://opencv-python-tutroals.readthedocs.io/en/latest/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
