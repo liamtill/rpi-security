@@ -5,7 +5,6 @@ import argparse
 import logging
 import logging.handlers
 from ConfigParser import SafeConfigParser
-import RPi.GPIO as GPIO
 from datetime import datetime, timedelta
 import sys
 import time
@@ -40,7 +39,7 @@ def get_network_address(interface_name):
     """
     from netaddr import IPNetwork
     from netifaces import ifaddresses
-    interface_details = ifaddresses(interface_name)
+    interface_details = ifaddresses(interface_name) 
     my_network = IPNetwork('%s/%s' % (interface_details[2][0]['addr'], interface_details[2][0]['netmask']))
     network_address = my_network.cidr
     logger.debug('Calculated network: %s' % network_address)
@@ -63,6 +62,11 @@ def parse_config_file(config_file):
     def str2bool(v):
         return v.lower() in ("yes", "true", "t", "1")
     default_config = {
+        'pir': 'False',
+        'picam': 'False',
+        'usb_cam': 'False',
+        'ipcam': 'True',
+        'ip_addr': 'None',
         'camera_save_path': '/var/tmp',
         'network_interface': 'mon0',
         'packet_timeout': '700',
@@ -71,12 +75,19 @@ def parse_config_file(config_file):
         'camera_vflip': 'False',
         'camera_hflip': 'False',
         'camera_image_size': '1024x768',
-        'camera_mode': 'video',
-        'camera_capture_length': '3'
+        'camera_mode': 'gif',
+        'camera_capture_length': '3',
+        'delta_thresh': '5',
+        'min_area_thresh': '5000'
     }
     cfg = SafeConfigParser(defaults=default_config)
     cfg.read(config_file)
     dict_config = dict(cfg.items('main'))
+    dict_config['pir'] = str2bool(dict_config['pir'])
+    dict_config['picam'] = str2bool(dict_config['picam'])
+    dict_config['usbcam'] = str2bool(dict_config['usb_cam'])
+    dict_config['ipcam'] = str2bool(dict_config['ipcam'])
+    dict_config['ip_addr'] = str(dict_config['ip_addr'])
     dict_config['debug_mode'] = str2bool(dict_config['debug_mode'])
     dict_config['camera_vflip'] = str2bool(dict_config['camera_vflip'])
     dict_config['camera_hflip'] = str2bool(dict_config['camera_hflip'])
@@ -85,6 +96,8 @@ def parse_config_file(config_file):
     dict_config['camera_capture_length'] = int(dict_config['camera_capture_length'])
     dict_config['camera_mode'] = dict_config['camera_mode'].lower()
     dict_config['packet_timeout'] = int(dict_config['packet_timeout'])
+    dict_config['delta_thresh'] = int(dict_config['delta_thresh'])
+    dict_config['min_area_thresh'] = int(dict_config['min_area_thresh'])
     if ',' in dict_config['mac_addresses']:
         dict_config['mac_addresses'] = dict_config['mac_addresses'].lower().split(',')
     else:
@@ -118,12 +131,21 @@ def take_photo(output_file):
     """
     Captures a photo and saves it disk.
     """
-    if args.debug:
+    if config['pir'] and args.debug:
         GPIO.output(32, True)
         time.sleep(0.25)
         GPIO.output(32, False)
     try:
-        camera.capture(output_file)
+        if config['picam']:
+            camera.capture(output_file)
+        if config['usb_cam']:
+            (snapped, frame) = camera.read() # get current frame and write
+            cv2.imwrite(output_file, frame)
+        if config['ipcam']:
+            bytes1, st1 = make_ip_stream() # open new stream as cant read from same stream as monitoring
+            grabbed, bytes1, frame1 = get_ip_stream(bytes1, st1) # get frame from stream
+            cv2.imwrite(output_file, frame1) # write image to file
+            st1.close()
     except Exception as e:
         logger.error('Failed to take photo: %s' % e)
         return False
@@ -134,9 +156,18 @@ def take_photo(output_file):
 def take_gif(output_file, length, temp_directory):
     temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
     jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
+    if config['ipcam']:
+        bytes2, st2 = make_ip_stream() # make new steam for gifs
     try:
         for jpeg in jpeg_files:
-            camera.capture(jpeg, resize=(800,600))
+            if config['picam']:
+                camera.capture(jpeg, resize=(800,600)) # capture frame from pi cam
+            if config['usb_cam']:
+                (snapped, frame) = camera.read() # snap frame each jpeg in loop
+                cv2.imwrite(jpeg, frame) # write to file
+            if config['ipcam']:
+                grabbed, bytes2, frame2 = get_ip_stream(bytes2, st2) # get frames
+                cv2.imwrite(jpeg, frame2)
         im=Image.open(jpeg_files[0])
         jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
         ims = [Image.open(i) for i in jpeg_files_no_first_frame]
@@ -151,6 +182,8 @@ def take_gif(output_file, length, temp_directory):
         return False
     else:
         logger.info("Captured gif: %s" % output_file)
+        if config['ipcam']:
+            st2.close()
         return True
 
 def archive_photo(photo_path):
@@ -391,9 +424,15 @@ def motion_detected(channel):
         logger.debug('Motion detected but current_state is: %s' % current_state)
 
 def exit_cleanup():
-    GPIO.cleanup()
+    if config['pir']:
+        GPIO.cleanup()
     if 'camera' in vars():
-        camera.close()
+        if config['picam']:
+            camera.close()
+        elif config['usb_cam']:
+            camera.release()
+    if config['ipcam']:
+        st0.close()
 
 def exit_clean(signal=None, frame=None):
     logger.info("rpi-security stopping...")
@@ -436,11 +475,113 @@ def setup_logging(debug_mode=False, log_to_stdout=False):
     logger.addHandler(stdout_handler)
     return logger
 
+def make_ip_stream():
+    """
+    Makes stream for IP camera access
+    """
+    bytes = ''
+    return bytes, urllib.urlopen('http://'+str(config['ip_addr']))
+
+def get_ip_stream(bytes, stream):
+    """
+    Gets frame from IP camera stream and returns this frame, grabbed flag and bytes from stream.
+    """
+    grabbed = False
+    while not grabbed:
+        bytes += stream.read(1024)
+        a = bytes.find('\xff\xd8')
+        b = bytes.find('\xff\xd9')
+        if a != -1 and b != -1:
+            jpg = bytes[a:b + 2]
+            bytes = bytes[b + 2:]
+            frame = cv2.imdecode(np.fromstring(jpg, dtype=np.uint8),
+                                 cv2.CV_LOAD_IMAGE_COLOR)  # put cv2.IMREAD_COLOR for opencv3
+            grabbed = True
+    return grabbed, bytes, frame
+
+def detect_motion():
+    """
+    Uses pi cam, USB webcam or IP webcam to detect motion. OpenCV is used to detect changes in
+    frames by using a weighted average allowing it to adjust to lighting, shadows.
+    """
+    logger.info("rpi-security running")
+    telegram_send_message('rpi-security running')
+
+    avg = None # init avg of frames
+    if config['ipcam']: # init stream for ip cam
+        global st0 # probably shouldnt use a global variable but it works for now
+        bytes, st0 = make_ip_stream() # make stream for monitoring
+
+    if config['pir']:
+        GPIO.setup(config['pir_pin'], GPIO.IN)
+        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
+        while True:
+            time.sleep(100)
+    else:
+        while True:
+            if config['picam']: # motino from pi cam
+                from picamera.array import PiRGBArray
+                capture = PiRGBArray(camera, size=config['camera_image_size'])
+                time.sleep(1) # wait for a sec for cam to be on
+                f =  camera.capture(capture, format="bgr", use_video_port=True)
+                # using the video port is faster than the image port per the API docs
+                frame = f.array
+            if config['usb_cam']: # usb cam
+                (snapped, frame) = camera.read()
+            if config['ipcam']: # ip cam
+                grabbed, bytes, frame = get_ip_stream(bytes, st0)
+
+            # possible resize
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # convert to grayscale
+            # smooth image, to average pixel intensities across a box of size 21x21, can play with this but 21x21 seems to work nice
+            # helps smooth out noise. Maybe use adaptive threshold?
+            gray = cv2.GaussianBlur(gray, (21, 21), 0)
+            if avg is None: # init avg with initial values if None
+                avg = gray.copy().astype("float")
+                if config['picam']:
+                    capture.truncate(0) # clear array
+                continue
+
+            # accumulate weighted average between current frame and previous frames
+            # then calc absolute difference between current frame and running average
+            cv2.accumulateWeighted(gray, avg, 0.5) # 0.5 is a default weighting to use between frames
+            delta = cv2.absdiff(gray, cv2.convertScaleAbs(avg)) # difference between frame and average
+            # make image of black and white if pixels over given threshold
+            thresh = cv2.threshold(delta, config['delta_thresh'], 255, cv2.THRESH_BINARY)[1]
+            kernel = np.ones((5, 5), np.uint8) # make kernel for erode and dilate. Can play with size of array but 5,5 seems to work good.
+            thresh = cv2.erode(thresh, kernel, iterations=2) # do erosion, useful for removing white noise, as well as gaussian blur above
+            thresh = cv2.dilate(thresh, kernel, iterations=2) # dilate white, now noise is removed. As per..
+            #http://opencv-python-tutroals.readthedocs.io/en/latest/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
+
+            # find contours connecting continous points
+            (cnts, _) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for c in cnts:
+                # if contour area is smaller than min_area_thresh then ignore
+                if cv2.contourArea(c) < config['min_area_thresh']:
+                    continue
+                else:
+                    # if area is larger then motion is detected
+                    # put current dat/time on image as a timestamp
+                    cv2.putText(frame, datetime.now().strftime("%A %d %B %Y %H:%M:%S"), (10, 20),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    motion_detected(0) # call motion detected to do routine
+                    # could calc bounding box for contour here or other action
+
 if __name__ == "__main__":
-    GPIO.setwarnings(False)
     # Parse arguments and configuration, set up logging
     args = parse_arguments()
     config = parse_config_file(args.config_file)
+    if config['pir']:
+        import RPi.GPIO as GPIO
+        GPIO.setwarnings(False)
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(32, GPIO.OUT, initial=False)
+    if config['picam'] or config['pir']:
+        import picamera
+    if config['ipcam']: # use IP webcam
+        import urllib
+        import numpy as np
     logger = setup_logging(debug_mode=config['debug_mode'], log_to_stdout=args.debug)
     state = read_state_file(args.state_file)
     sys.excepthook = exception_handler
@@ -454,8 +595,7 @@ if __name__ == "__main__":
         exit_error('Interface %s does not exist, is not in monitor mode, is not up or MAC address unknown.' % config['network_interface'])
     if not os.geteuid() == 0:
         exit_error('%s must be run as root' % sys.argv[0])
-    # Now begin importing slow modules and setting up camera, Telegram and threads
-    import picamera
+    # Now begin importing slow modules, Telegram and threads
     logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
     from scapy.all import srp, Ether, ARP
     from scapy.all import conf as scapy_conf
@@ -465,14 +605,19 @@ if __name__ == "__main__":
     from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, RegexHandler
     from threading import Thread, current_thread
     from PIL import Image
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(32, GPIO.OUT, initial=False)
+    import cv2
     try:
-        camera = picamera.PiCamera()
-        camera.resolution = config['camera_image_size']
-        camera.vflip = config['camera_vflip']
-        camera.hflip = config['camera_hflip']
-        camera.led = False
+        if config['picam'] or config['pir']: # assume using picam OR pir for motion detection, need to init camera either way
+            camera = picamera.PiCamera()
+            camera.resolution = config['camera_image_size']
+            camera.vflip = config['camera_vflip']
+            camera.hflip = config['camera_hflip']
+            camera.led = False
+        if config['usb_cam']: # assume using only usb cam for motion detection
+            camera = cv2.VideoCapture(0)
+        if config['ipcam']: # use IP webcam
+            logger.info("Using IP webcam at "+'http://'+str(config['ip_addr'])) # should remove hard coded http:// and put in config
+        time.sleep(1) # wait for a sec for cam to be on
     except Exception as e:
         exit_error('Camera module failed to intialise with error %s' % e)
     try:
@@ -505,11 +650,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, exit_clean)
     time.sleep(2)
     try:
-        GPIO.setup(config['pir_pin'], GPIO.IN)
-        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
-        logger.info("rpi-security running")
-        telegram_send_message('rpi-security running')
-        while 1:
-            time.sleep(100)
+        detect_motion()
     except KeyboardInterrupt:
         exit_clean()
