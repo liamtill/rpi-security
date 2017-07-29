@@ -9,10 +9,10 @@ setup(
     license='GPLv2',
     description='A security system written in python to run on a Raspberry Pi with motion detection and mobile notifications',
     long_description=open('README.md').read(),
-    scripts = [ 'bin/rpi-security.py' ],
+    scripts = [ 'bin/rpi-security.py', 'bin/motion_detection.py' ],
     data_files=[
         ('/lib/systemd/system', ['etc/rpi-security.service']),
-        ('/etc', ['etc/rpi-security.conf']),
+        ('/etc', ['etc/rpi-security.conf'],),
         ('/var/lib/rpi-security', ['etc/state.yaml'])
     ],
     install_requires=[
@@ -23,7 +23,7 @@ setup(
         'netaddr',
         'netifaces',
         'pyyaml',
-        'Pillow>=3.4.0'
+        'Pillow>=3.4.0',
     ],
     classifiers=[
     'Environment :: Console',

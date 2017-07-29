@@ -63,10 +63,9 @@ def parse_config_file(config_file):
         return v.lower() in ("yes", "true", "t", "1")
     default_config = {
         'pir': 'False',
-        'picam': 'False',
-        'usb_cam': 'False',
-        'ipcam': 'True',
-        'ip_addr': 'None',
+        'picam': 'True',
+        'usbcams': '0',
+        'ip_addresses': '',
         'camera_save_path': '/var/tmp',
         'network_interface': 'mon0',
         'packet_timeout': '700',
@@ -75,7 +74,7 @@ def parse_config_file(config_file):
         'camera_vflip': 'False',
         'camera_hflip': 'False',
         'camera_image_size': '1024x768',
-        'camera_mode': 'gif',
+        'camera_mode': 'photo',
         'camera_capture_length': '3',
         'delta_thresh': '5',
         'min_area_thresh': '5000'
@@ -85,9 +84,7 @@ def parse_config_file(config_file):
     dict_config = dict(cfg.items('main'))
     dict_config['pir'] = str2bool(dict_config['pir'])
     dict_config['picam'] = str2bool(dict_config['picam'])
-    dict_config['usbcam'] = str2bool(dict_config['usb_cam'])
-    dict_config['ipcam'] = str2bool(dict_config['ipcam'])
-    dict_config['ip_addr'] = str(dict_config['ip_addr'])
+    dict_config['usbcams'] = int(dict_config['usbcams'])
     dict_config['debug_mode'] = str2bool(dict_config['debug_mode'])
     dict_config['camera_vflip'] = str2bool(dict_config['camera_vflip'])
     dict_config['camera_hflip'] = str2bool(dict_config['camera_hflip'])
@@ -102,6 +99,8 @@ def parse_config_file(config_file):
         dict_config['mac_addresses'] = dict_config['mac_addresses'].lower().split(',')
     else:
         dict_config['mac_addresses'] = [ dict_config['mac_addresses'].lower() ]
+    if ',' in dict_config['ip_addresses']:
+        dict_config['ip_addresses'] = dict_config['ip_addresses'].split(',')
     return dict_config
 
 def read_state_file(state_file):
@@ -127,7 +126,7 @@ def write_state_file(state_file, state_data):
     else:
         logger.debug('State file written: %s' % state_file)
 
-def take_photo(output_file):
+def take_photo(frame, output_file):
     """
     Captures a photo and saves it disk.
     """
@@ -136,16 +135,11 @@ def take_photo(output_file):
         time.sleep(0.25)
         GPIO.output(32, False)
     try:
-        if config['picam']:
+        if config['pir']:
             camera.capture(output_file)
-        if config['usb_cam']:
-            (snapped, frame) = camera.read() # get current frame and write
-            cv2.imwrite(output_file, frame)
-        if config['ipcam']:
-            bytes1, st1 = make_ip_stream() # open new stream as cant read from same stream as monitoring
-            grabbed, bytes1, frame1 = get_ip_stream(bytes1, st1) # get frame from stream
-            cv2.imwrite(output_file, frame1) # write image to file
-            st1.close()
+        else:
+            videofeeds.timestamp(frame)
+            videofeeds.saveframe(output_file, frame)
     except Exception as e:
         logger.error('Failed to take photo: %s' % e)
         return False
@@ -153,21 +147,20 @@ def take_photo(output_file):
         logger.info("Captured image: %s" % output_file)
         return True
 
-def take_gif(output_file, length, temp_directory):
+def take_gif(activefeed, output_file, length, temp_directory):
     temp_jpeg_path = temp_directory + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + 'gif-part'
     jpeg_files = ['%s-%s.jpg' % (temp_jpeg_path, i) for i in range(length*3)]
-    if config['ipcam']:
-        bytes2, st2 = make_ip_stream() # make new steam for gifs
     try:
+        if not config['pir']:
+            feed, thefeed = videofeeds.getactivefeed(activefeed)
         for jpeg in jpeg_files:
-            if config['picam']:
+            if config['pir']:
                 camera.capture(jpeg, resize=(800,600)) # capture frame from pi cam
-            if config['usb_cam']:
-                (snapped, frame) = camera.read() # snap frame each jpeg in loop
-                cv2.imwrite(jpeg, frame) # write to file
-            if config['ipcam']:
-                grabbed, bytes2, frame2 = get_ip_stream(bytes2, st2) # get frames
-                cv2.imwrite(jpeg, frame2)
+            else:
+                frame = videofeeds.getframes(feed, thefeed)
+                for i, f in enumerate(frame):
+                    videofeeds.timestamp(f)
+                    videofeeds.saveframe(jpeg, f)
         im=Image.open(jpeg_files[0])
         jpeg_files_no_first_frame=[x for x in jpeg_files if x != jpeg_files[0]]
         ims = [Image.open(i) for i in jpeg_files_no_first_frame]
@@ -182,8 +175,6 @@ def take_gif(output_file, length, temp_directory):
         return False
     else:
         logger.info("Captured gif: %s" % output_file)
-        if config['ipcam']:
-            st2.close()
         return True
 
 def archive_photo(photo_path):
@@ -341,14 +332,15 @@ def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
                 if days > 0:
                     text = '%s days, ' % days + text
             return text
-        return '*rpi-security status*\nCurrent state: _%s_\nLast state: _%s_\nLast change: _%s ago_\nUptime: _%s_\nLast MAC detected: _%s %s ago_\nAlarm triggered: _%s_' % (
+        return '*rpi-security status*\nCurrent state: _%s_\nLast state: _%s_\nLast change: _%s ago_\nUptime: _%s_\nLast MAC detected: _%s %s ago_\nAlarm triggered: _%s_\nMotion on: %s' % (
                 alarm_state_dict['current_state'],
                 alarm_state_dict['previous_state'],
                 readable_delta(alarm_state_dict['last_state_change']),
                 readable_delta(alarm_state_dict['start_time']),
                 alarm_state_dict['last_packet_mac'],
                 readable_delta(alarm_state_dict['last_packet']),
-                alarm_state_dict['alarm_triggered']
+                alarm_state_dict['alarm_triggered'],
+                msg
             )
     def save_chat_id(bot, update):
         if 'telegram_chat_id' not in state:
@@ -365,7 +357,7 @@ def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
             return True
     def help(bot, update):
         if check_chat_id(update):
-            bot.sendMessage(update.message.chat_id, parse_mode='Markdown', text='/status: Request status\n/disable: Disable alarm\n/enable: Enable alarm\n/photo: Take a photo\n/gif: Take a gif\n', timeout=10)
+            bot.sendMessage(update.message.chat_id, parse_mode='Markdown', text='/status: Request status\n/disable: Disable alarm\n/enable: Enable alarm\n/photo feed: Take a photo\n/gif feed: Take a gif\n', timeout=10)
     def status(bot, update):
         if check_chat_id(update):
             bot.sendMessage(update.message.chat_id, parse_mode='Markdown', text=prepare_status(alarm_state), timeout=10)
@@ -375,15 +367,28 @@ def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
     def enable(bot, update):
         if check_chat_id(update):
             update_alarm_state('disarmed')
-    def photo(bot, update):
+    def photo(bot, update, args):
         if check_chat_id(update):
-            file_path = camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + '.jpeg'
-            take_photo(file_path)
+            activefeed = args[0]
+            if config['pir']:
+                activefeed = 'picam'
+                frame = [1]
+            else:
+                feed, thefeed = videofeeds.getactivefeed(activefeed) # get the active feed for capturing
+                frame = videofeeds.getframes(feed, thefeed) # get frame
+            file_path = camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + '-' + str(
+                activefeed) + '.jpeg'
+            for i, f in enumerate(frame):  # have to get frame to save photo
+                take_photo(f, file_path)
             telegram_send_file(file_path)
-    def gif(bot, update):
+    def gif(bot, update, args):
         if check_chat_id(update):
-            file_path = camera_save_path + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + '.gif'
-            take_gif(file_path, camera_capture_length, camera_save_path)
+            activefeed = args[0]
+            if config['pir']:
+                activefeed = 'picam'
+            file_path = camera_save_path + "/rpi-security-" + datetime.now().strftime(
+                    "%Y-%m-%d-%H%M%S") + '-' + str(activefeed) + '.gif'
+            take_gif(activefeed, file_path, camera_capture_length, camera_save_path)
             telegram_send_file(file_path)
     def error(bot, update, error):
         logger.error('Update "%s" caused error "%s"' % (update, error))
@@ -395,44 +400,44 @@ def telegram_bot(token, camera_save_path, camera_capture_length, camera_mode):
     dp.add_handler(CommandHandler("status", status))
     dp.add_handler(CommandHandler("disable", disable))
     dp.add_handler(CommandHandler("enable", enable))
-    dp.add_handler(CommandHandler("photo", photo))
-    dp.add_handler(CommandHandler("gif", gif))
+    dp.add_handler(CommandHandler("photo", photo, pass_args=True))
+    dp.add_handler(CommandHandler("gif", gif, pass_args=True))
     dp.add_error_handler(error)
     logger.info("thread running")
     updater.start_polling(timeout=10)
 
-def motion_detected(channel):
+def motion_detected(frame, activefeed):
     """
     Capture a photo if motion is detected and the alarm state is armed
     """
+    if config['pir']:
+        activefeed = 'picam'
+        frame = None
     current_state = alarm_state['current_state']
     if current_state == 'armed':
         logger.info('Motion detected')
-        file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        file_prefix = config['camera_save_path'] + "/rpi-security-" + datetime.now().strftime("%Y-%m-%d-%H%M%S") + activefeed
         if config['camera_mode'] == 'gif':
             camera_output_file = "%s.gif" % file_prefix
-            take_gif(camera_output_file, config['camera_capture_length'], config['camera_save_path'])
+            take_gif(activefeed, camera_output_file, config['camera_capture_length'], config['camera_save_path'])
             captured_from_camera.append(camera_output_file)
         elif config['camera_mode'] == 'photo':
             for i in range(0, config['camera_capture_length'], 1):
                 camera_output_file = "%s-%s.jpeg" % (file_prefix, i)
-                take_photo(camera_output_file)
+                take_photo(frame, camera_output_file)
                 captured_from_camera.append(camera_output_file)
         else:
             logger.error("Unkown camera_mode %s" % config['camera_mode'])
     else:
-        logger.debug('Motion detected but current_state is: %s' % current_state)
+        logger.debug('Motion detected on %s but current_state is: %s' % (activefeed, current_state))
 
 def exit_cleanup():
     if config['pir']:
         GPIO.cleanup()
     if 'camera' in vars():
-        if config['picam']:
-            camera.close()
-        elif config['usb_cam']:
-            camera.release()
-    if config['ipcam']:
-        st0.close()
+        camera.close()
+    else:
+        videofeeds.cleanup(feeds)
 
 def exit_clean(signal=None, frame=None):
     logger.info("rpi-security stopping...")
@@ -475,99 +480,18 @@ def setup_logging(debug_mode=False, log_to_stdout=False):
     logger.addHandler(stdout_handler)
     return logger
 
-def make_ip_stream():
+def camera_motion_detection(feeds, detectors):
     """
-    Makes stream for IP camera access
+    This function runs motion detection on video feeds from camera sources
     """
-    bytes = ''
-    return bytes, urllib.urlopen('http://'+str(config['ip_addr']))
-
-def get_ip_stream(bytes, stream):
-    """
-    Gets frame from IP camera stream and returns this frame, grabbed flag and bytes from stream.
-    """
-    grabbed = False
-    while not grabbed:
-        bytes += stream.read(1024)
-        a = bytes.find('\xff\xd8')
-        b = bytes.find('\xff\xd9')
-        if a != -1 and b != -1:
-            jpg = bytes[a:b + 2]
-            bytes = bytes[b + 2:]
-            frame = cv2.imdecode(np.fromstring(jpg, dtype=np.uint8),
-                                 cv2.CV_LOAD_IMAGE_COLOR)  # put cv2.IMREAD_COLOR for opencv3
-            grabbed = True
-    return grabbed, bytes, frame
-
-def detect_motion():
-    """
-    Uses pi cam, USB webcam or IP webcam to detect motion. OpenCV is used to detect changes in
-    frames by using a weighted average allowing it to adjust to lighting, shadows.
-    """
-    logger.info("rpi-security running")
-    telegram_send_message('rpi-security running')
-
-    avg = None # init avg of frames
-    kernel = np.ones((5, 5), np.uint8)  # make kernel for erode and dilate. Can play with size of array but 5,5 seems to work good.
-
-    if config['ipcam']: # init stream for ip cam
-        global st0 # probably shouldnt use a global variable but it works for now
-        bytes, st0 = make_ip_stream() # make stream for monitoring
-
-    if config['pir']:
-        GPIO.setup(config['pir_pin'], GPIO.IN)
-        GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
-        while True:
-            time.sleep(100)
-    else:
-        while True:
-            if config['picam']: # motino from pi cam
-                from picamera.array import PiRGBArray
-                capture = PiRGBArray(camera, size=config['camera_image_size'])
-                time.sleep(1) # wait for a sec for cam to be on
-                f =  camera.capture(capture, format="bgr", use_video_port=True)
-                # using the video port is faster than the image port per the API docs
-                frame = f.array
-            if config['usb_cam']: # usb cam
-                (snapped, frame) = camera.read()
-            if config['ipcam']: # ip cam
-                grabbed, bytes, frame = get_ip_stream(bytes, st0)
-
-            # possible resize as using the full image resolution may be inefficient!
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # convert to grayscale
-            # smooth image, to average pixel intensities across a box of size 21x21, can play with this but 21x21 seems to work nice
-            # helps smooth out noise. Maybe use adaptive threshold?
-            gray = cv2.GaussianBlur(gray, (21, 21), 0)
-            if avg is None: # init avg with initial values if None
-                avg = gray.copy().astype("float")
-                if config['picam']:
-                    capture.truncate(0) # clear array
-                continue
-
-            # accumulate weighted average between current frame and previous frames
-            # then calc absolute difference between current frame and running average
-            cv2.accumulateWeighted(gray, avg, 0.5) # 0.5 is a default weighting to use between frames
-            delta = cv2.absdiff(gray, cv2.convertScaleAbs(avg)) # difference between frame and average
-            # make image of black and white if pixels over given threshold
-            thresh = cv2.threshold(delta, config['delta_thresh'], 255, cv2.THRESH_BINARY)[1]
-            thresh = cv2.erode(thresh, kernel, iterations=2) # do erosion, useful for removing white noise, as well as gaussian blur above
-            thresh = cv2.dilate(thresh, kernel, iterations=2) # dilate white, now noise is removed. As per..
-            #http://opencv-python-tutroals.readthedocs.io/en/latest/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
-
-            # find contours connecting continous points
-            (cnts, _) = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            for c in cnts:
-                # if contour area is smaller than min_area_thresh then ignore
-                if cv2.contourArea(c) < config['min_area_thresh']:
-                    continue
-                else:
-                    # if area is larger then motion is detected
-                    # put current dat/time on image as a timestamp
-                    cv2.putText(frame, datetime.now().strftime("%A %d %B %Y %H:%M:%S"), (10, 20),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                    motion_detected(0) # call motion detected to do routine
-                    # could calc bounding box for contour here or other action
+    while True:
+        for (feed, motion) in zip(feeds, detectors):
+            frames = videofeeds.getframes(feeds, feed) # get frames
+            for i, f in enumerate(frames):
+                detected = motion.detect_motion(f) # check for motion
+                if detected:
+                    activefeed = str(feed)+str(i) # active feed motion is on
+                    motion_detected(videofeeds.timestamp(f.copy()), activefeed) # call motion_detected
 
 if __name__ == "__main__":
     # Parse arguments and configuration, set up logging
@@ -575,14 +499,13 @@ if __name__ == "__main__":
     config = parse_config_file(args.config_file)
     if config['pir']:
         import RPi.GPIO as GPIO
+        import picamera
+        from picamera.array import PiRGBArray
         GPIO.setwarnings(False)
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(32, GPIO.OUT, initial=False)
-    if config['picam'] or config['pir']:
-        import picamera
-    if config['ipcam']: # use IP webcam
-        import urllib
-        import numpy as np
+    else:
+        from motion_detection import VideoFeeds, MotionDetector
     logger = setup_logging(debug_mode=config['debug_mode'], log_to_stdout=args.debug)
     state = read_state_file(args.state_file)
     sys.excepthook = exception_handler
@@ -606,21 +529,30 @@ if __name__ == "__main__":
     from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, RegexHandler
     from threading import Thread, current_thread
     from PIL import Image
-    import cv2
     try:
-        if config['picam'] or config['pir']: # assume using picam OR pir for motion detection, need to init camera either way
+        if config['pir']: # possibly use classes to init feed now
             camera = picamera.PiCamera()
             camera.resolution = config['camera_image_size']
             camera.vflip = config['camera_vflip']
             camera.hflip = config['camera_hflip']
             camera.led = False
-        if config['usb_cam']: # assume using only usb cam for motion detection
-            camera = cv2.VideoCapture(0)
-        if config['ipcam']: # use IP webcam
-            logger.info("Using IP webcam at "+'http://'+str(config['ip_addr'])) # should remove hard coded http:// and put in config
-        time.sleep(1) # wait for a sec for cam to be on
+            capture = PiRGBArray(camera, config['camera_image_size'])
+            logger.info("Using PIR sensor for motion detection")
+            msg = "PIR active"
+        else:
+            logger.info("Using camera(s) for motion detection")
+            videofeeds = VideoFeeds(config['picam'], config['usbcams'], config['ip_addresses']) # make videofeeds object
+            feeds, numfeeds, msg, active = videofeeds.start_feeds(config['camera_image_size'], config['camera_hflip'], config['camera_vflip']) # start feeds
+            logger.info(msg)
+            if active is False:
+                exit_error(msg)
+            detectors = []
+            for i in range(numfeeds): # start motion detector objects for each feed
+                detectors.append(MotionDetector(config['delta_thresh'], config['min_area_thresh']))
+            #logger.info(msg)
+        time.sleep(1)
     except Exception as e:
-        exit_error('Camera module failed to intialise with error %s' % e)
+        exit_error('Camera feeds failed to intialise with error %s' % e)
     try:
         bot = telegram.Bot(token=config['telegram_bot_token'])
     except Exception as e:
@@ -651,6 +583,14 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, exit_clean)
     time.sleep(2)
     try:
-        detect_motion()
+        logger.info("rpi-security running")
+        telegram_send_message('rpi-security running')
+        if config['pir']:
+            GPIO.setup(config['pir_pin'], GPIO.IN)
+            GPIO.add_event_detect(config['pir_pin'], GPIO.RISING, callback=motion_detected)
+            while True:
+                time.sleep(100)
+        else:
+            camera_motion_detection(feeds, detectors)
     except KeyboardInterrupt:
         exit_clean()

@@ -7,6 +7,7 @@ Features:
   - Mobile notifications with photos.
   - Detects when you are home and arms or disarms automatically.
   - Can be remotely disabled or queried for status using [Telegram](https://telegram.org/).
+  - Detect motion using either PIR or multiple camera sources (Pi cam, USB camera and IP webcams)
 
 Similar to these products:
 
@@ -23,7 +24,7 @@ Similar to these products:
 You will need this hardware:
   - Raspberry Pi with camera interface. I use a model A+.
   - Raspberry Pi camera module.
-  - PIR sensor module. Any generic HC SR501 (or similar) module should work. Example [from Adafruit](https://www.adafruit.com/products/189).
+  - PIR sensor module. Any generic HC SR501 (or similar) module should work. Example [from Adafruit](https://www.adafruit.com/products/189). (OPTIONAL)
   - USB Wi-Fi that supports monitor mode. I used a RT5370 based adapter, they are cheap at about €6 and easy to find.
   - An enclosure of some sort. Details of the hardware I made is [here](hardware).
 
@@ -31,6 +32,7 @@ Other requirements:
   - A [Telegram bot](https://telegram.org/blog/bot-revolution). It's free and easy to setup.
   - Raspbian distribution installed. I used Jessie lite. You could possibly use a different OS but I haven't tried it.
   - Python 2.7.
+  - *For this fork* - python-opencv install by sudo apt-get install python-opencv
 
 ## How it works
 
@@ -93,7 +95,7 @@ First install required packages:
 
 ```
 sudo apt-get update
-sudo apt-get install tcpdump iw python-dev python-pip libjpeg8-dev zlib1g-dev
+sudo apt-get install tcpdump iw python-dev python-pip libjpeg8-dev zlib1g-dev python-opencv
 ```
 
 Update pip:
